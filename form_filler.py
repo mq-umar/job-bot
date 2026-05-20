@@ -149,12 +149,15 @@ def human_delay(min_s: float = 0.4, max_s: float = 1.0):
 
 def detect_platform(url: str) -> str:
     url = url.lower()
-    if "greenhouse.io" in url:  return "greenhouse"
-    if "lever.co"      in url:  return "lever"
-    if "workday"       in url:  return "workday"
-    if "linkedin.com"  in url:  return "linkedin"
-    if "indeed.com"    in url:  return "indeed"
-    if "taleo"         in url:  return "taleo"
+    if "greenhouse.io"    in url: return "greenhouse"
+    if "lever.co"         in url: return "lever"
+    if "workday"          in url: return "workday"
+    if "ashbyhq.com"      in url: return "ashby"
+    if "icims.com"        in url: return "icims"
+    if "taleo"            in url: return "taleo"
+    if "smartrecruiters"  in url: return "smartrecruiters"
+    if "linkedin.com"     in url: return "linkedin"
+    if "indeed.com"       in url: return "indeed"
     return "generic"
 
 
@@ -203,6 +206,32 @@ def detect_recaptcha(page) -> bool:
         return False
     except Exception:
         return False
+
+
+# ── Popup / cookie banner dismissal ──────────────────────────────────────────
+
+def dismiss_popups(page) -> None:
+    """Auto-dismiss cookie banners and modal popups before interacting with a page."""
+    selectors = [
+        "button:has-text('Accept All')", "button:has-text('Accept all')",
+        "button:has-text('Accept Cookies')", "button:has-text('Accept cookies')",
+        "button:has-text('I Accept')", "button:has-text('I Agree')",
+        "button:has-text('Agree')", "button:has-text('Accept')",
+        "button:has-text('Got it')", "button:has-text('OK')",
+        "button:has-text('Dismiss')", "button:has-text('No thanks')",
+        "button:has-text('Not now')",
+        "[aria-label='Close']", "[aria-label='close']", "[aria-label='Dismiss']",
+        "[id*='cookie'] button", "[class*='cookie-banner'] button",
+    ]
+    for sel in selectors:
+        try:
+            btn = page.locator(sel).first
+            if btn.is_visible(timeout=400):
+                btn.click(timeout=800)
+                time.sleep(0.3)
+                return
+        except Exception:
+            pass
 
 
 # ── Label resolution ──────────────────────────────────────────────────────────
@@ -443,6 +472,86 @@ def _upload_resume(page, resume_pdf_path: str, log: list) -> bool:
             pass
     log.append({"field": "resume_upload", "status": "skipped", "note": "no file input found"})
     return False
+
+
+# ── Resume replacement (LinkedIn / Indeed) ────────────────────────────────────
+
+def replace_linkedin_resume(page, resume_path: str, log: list) -> tuple:
+    """
+    Replace the stored LinkedIn resume with the job-specific PDF.
+    Returns (success: bool, method: str).
+    Appends _meta_resume_replaced to log for downstream logging.
+    """
+    for sel in [
+        'input[type="file"][name*="resume"]',
+        'input[type="file"][accept*="pdf"]',
+        '[data-test-resume-upload-btn] input[type="file"]',
+        'input[type="file"]',
+    ]:
+        try:
+            el = page.locator(sel).first
+            if el.count() > 0:
+                el.set_input_files(resume_path)
+                time.sleep(0.5)
+                log.append({"field": "_meta_resume_replaced", "status": "yes",
+                             "value": "file_input"})
+                print(f"  Resume replaced (LinkedIn): {Path(resume_path).name}")
+                return True, "file_input"
+        except Exception:
+            pass
+
+    for btn_sel in [
+        'button:has-text("Upload resume")', 'button:has-text("Change resume")',
+        'label:has-text("Upload resume")', 'label:has-text("Change")',
+        '[data-test-resume-upload-btn]',
+    ]:
+        try:
+            btn = page.locator(btn_sel).first
+            if btn.is_visible(timeout=1000):
+                with page.expect_file_chooser(timeout=3000) as fc_info:
+                    btn.click()
+                fc_info.value.set_files(resume_path)
+                time.sleep(0.5)
+                log.append({"field": "_meta_resume_replaced", "status": "yes",
+                             "value": "upload_button"})
+                print(f"  Resume replaced (LinkedIn button): {Path(resume_path).name}")
+                return True, "upload_button"
+        except Exception:
+            pass
+
+    print(f"  WARNING: Could not replace LinkedIn resume — using account default")
+    log.append({"field": "_meta_resume_replaced", "status": "no",
+                 "value": "failed_used_default"})
+    return False, "failed_used_default"
+
+
+def replace_indeed_resume(page, resume_path: str, log: list) -> tuple:
+    """
+    Replace the stored Indeed resume with the job-specific PDF.
+    Returns (success: bool, method: str).
+    """
+    for sel in [
+        'input[type="file"][name*="resume"]',
+        'input[type="file"][id*="resume"]',
+        'input[type="file"][accept*="pdf"]',
+        '#resume-upload-input',
+        '[data-testid="resume-file-input"]',
+        'input[type="file"]',
+    ]:
+        try:
+            if page.locator(sel).count() > 0:
+                page.set_input_files(sel, resume_path)
+                time.sleep(0.5)
+                log.append({"field": "_meta_resume_replaced", "status": "yes",
+                             "value": "file_input"})
+                print(f"  Resume replaced (Indeed): {Path(resume_path).name}")
+                return True, "file_input"
+        except Exception:
+            pass
+
+    log.append({"field": "_meta_resume_replaced", "status": "no",
+                 "value": "failed_used_default"})
+    return False, "failed_used_default"
 
 
 # ── Universal field scanner ───────────────────────────────────────────────────
@@ -727,14 +836,12 @@ def fill_indeed_easy_apply(page, context, profile: dict, profile_name: str,
                             print("\n  [CAPTCHA] Solve reCAPTCHA then press Enter...")
                             input("  > ")
 
-                        # Upload resume if file input visible
+                        # Replace resume on this step
                         try:
                             fi = page.locator("input[type='file']").first
                             if fi.is_visible(timeout=1000):
-                                fi.set_input_files(resume_pdf_path)
+                                replace_indeed_resume(page, resume_pdf_path, log)
                                 human_delay(1, 2)
-                                log.append({"field": "resume_upload", "status": "filled",
-                                             "value": resume_name})
                         except Exception:
                             pass
 
@@ -967,14 +1074,12 @@ def _fill_linkedin(page, profile: dict, profile_name: str,
             print("\n  [CAPTCHA] reCAPTCHA detected — solve it in the browser, then press Enter...")
             input("  > ")
 
-        # Upload resume if step has file input
+        # Replace resume on this step
         try:
             fi = page.locator("input[type='file']").first
             if fi.is_visible():
-                fi.set_input_files(resume_pdf_path)
+                replace_linkedin_resume(page, resume_pdf_path, log)
                 human_delay(1, 2)
-                log.append({"field": "resume_upload", "status": "filled",
-                             "value": resume_name})
         except Exception:
             pass
 

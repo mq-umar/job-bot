@@ -39,7 +39,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from form_filler import (
-    click_submit, detect_platform, detect_recaptcha,
+    click_submit, detect_platform, detect_recaptcha, dismiss_popups,
     extract_job_description, fill_form, fill_indeed_easy_apply,
     find_submit_button, parse_max_salary, wait_for_submission_confirmation,
 )
@@ -79,23 +79,35 @@ def normalize_url(url: str) -> str:
 
 class SessionStats:
     def __init__(self):
-        self.discovered    = 0
-        self.duplicates    = 0
-        self.scored        = 0
-        self.attempted     = 0
-        self.submitted     = 0
-        self.submit_failed = 0
-        self.captcha       = 0
-        self.errors        = 0
-        self.dry_run       = 0
-        self.by_fit: dict  = {k: 0 for k in
-                              ("Strong Fit", "Good Fit", "Possible Fit", "Stretch", "Low Fit")}
+        self.discovered      = 0
+        self.duplicates      = 0
+        self.scored          = 0
+        self.attempted       = 0
+        self.submitted       = 0
+        self.submit_failed   = 0
+        self.captcha         = 0
+        self.errors          = 0
+        self.dry_run         = 0
+        self.resume_replaced = 0
+        self.by_fit: dict    = {k: 0 for k in
+                                ("Strong Fit", "Good Fit", "Possible Fit", "Stretch", "Low Fit")}
+        self.by_tier: dict   = {1: 0, 2: 0, 3: 0, 4: 0, 0: 0}
+        self.by_apply_method: dict = {
+            "direct_form": 0, "easy_apply": 0,
+            "company_site_redirect": 0, "simple_apply": 0,
+        }
         self.top_jobs: list = []
 
     def record(self, company: str, title: str, score: float,
-               fit: str, status: str):
+               fit: str, status: str, source_tier: int = 0,
+               apply_method: str = "", resume_replaced: bool = False):
         self.scored += 1
         self.by_fit[fit] = self.by_fit.get(fit, 0) + 1
+        self.by_tier[source_tier] = self.by_tier.get(source_tier, 0) + 1
+        if apply_method in self.by_apply_method:
+            self.by_apply_method[apply_method] += 1
+        if resume_replaced:
+            self.resume_replaced += 1
         if status in ("submitted", "submitted_manually"):
             self.submitted += 1
         elif status == "submit_failed":
@@ -104,38 +116,53 @@ class SessionStats:
             self.errors += 1
         elif status == "dry_run":
             self.dry_run += 1
-        elif status not in ("skipped_manual", "already_applied",
-                            "watchdog_timeout"):
+        elif status not in ("skipped_manual", "already_applied", "watchdog_timeout"):
             self.attempted += 1
-        self.top_jobs.append((company, title, score, fit))
+        self.top_jobs.append((company, title, score, fit, apply_method or ""))
         self.top_jobs.sort(key=lambda x: x[2], reverse=True)
         self.top_jobs = self.top_jobs[:10]
 
     def print_summary(self):
         console.rule("[bold]Run Summary[/bold]")
-        rows = [
-            ("Jobs discovered",        self.discovered),
-            ("Duplicates skipped",     self.duplicates),
-            ("Jobs scored",            self.scored),
-            ("Applications attempted", self.attempted),
-            ("Submitted",              self.submitted),
-            ("Submit failed",          self.submit_failed),
-            ("Captcha interventions",  self.captcha),
-            ("Errors",                 self.errors),
-            ("Dry run (not submitted)",self.dry_run),
-        ]
-        for label, val in rows:
-            style = "green" if label == "Submitted" and val else "default"
-            console.print(f"  {label}: [{style}]{val}[/{style}]")
+
+        tier_names = {
+            1: "Direct company pages", 2: "Indeed",
+            3: "LinkedIn", 4: "Google Jobs", 0: "CSV/manual",
+        }
+        console.print("\n  Jobs discovered by tier:")
+        for tier in sorted(self.by_tier):
+            count = self.by_tier[tier]
+            if count:
+                console.print(f"    {tier_names.get(tier, f'Tier {tier}')}: {count}")
+
+        console.print(f"\n  Duplicates skipped (already applied): {self.duplicates}")
+        console.print(f"  Jobs scored: {self.scored}")
+
+        console.print("\n  Applications attempted:")
+        console.print(f"    Total: {self.attempted}")
+        for method, count in self.by_apply_method.items():
+            if count:
+                console.print(f"    {method}: {count}")
+
+        console.print(f"\n  [green]Submitted: {self.submitted}[/green]")
+        console.print(f"    Resume replaced successfully: {self.resume_replaced}")
+        used_default = max(0, self.submitted - self.resume_replaced)
+        console.print(f"    Used account default resume: {used_default}")
+        console.print(f"  Submit failed: {self.submit_failed}")
+        console.print(f"  Manual CAPTCHA solved: {self.captcha}")
+        console.print(f"  Errors: {self.errors}")
+        console.print(f"  Dry run (not submitted): {self.dry_run}")
 
         console.print("\n  By fit label:")
         for lbl, count in self.by_fit.items():
-            console.print(f"    {lbl}: {count}")
+            if count:
+                console.print(f"    {lbl}: {count}")
 
         if self.top_jobs:
             console.print("\n  Top 10 by resume score:")
-            for i, (co, ti, sc, fl) in enumerate(self.top_jobs, 1):
-                console.print(f"    {i:2}. {co} — {ti} (score: {sc:.2f}, {fl})")
+            for i, (co, ti, sc, fl, meth) in enumerate(self.top_jobs, 1):
+                suffix = f", {meth}" if meth else ""
+                console.print(f"    {i:2}. {co} — {ti} (score: {sc:.2f}, {fl}{suffix})")
 
 
 # ── Watchdog ──────────────────────────────────────────────────────────────────
@@ -244,9 +271,11 @@ def load_applied_urls(profile_name: str) -> set:
 
 _CSV_FIELDS = [
     "timestamp", "profile", "company", "title", "location", "salary_parsed",
-    "salary_label", "job_url", "platform", "selected_resume", "resume_score",
-    "fit_label", "matched_keywords", "cover_letter_used", "status",
-    "screenshot_path", "error_notes",
+    "salary_label", "job_url", "final_url", "source_tier", "source",
+    "platform", "ats_platform", "apply_method",
+    "selected_resume", "resume_score", "fit_label", "matched_keywords",
+    "resume_replaced", "resume_replacement_method",
+    "cover_letter_used", "status", "screenshot_path", "error_notes",
 ]
 
 def log_result(profile_name: str, entry: dict):
@@ -273,28 +302,46 @@ def log_result(profile_name: str, entry: dict):
 def _make_entry(profile_name: str, row: dict, status: str,
                 pdf_path: str, score: float, fit: str,
                 keywords: list, screenshot: str = "",
-                notes: str = "", salary_text: str = "") -> dict:
+                notes: str = "", salary_text: str = "",
+                field_log: list = None, apply_method: str = "",
+                final_url: str = "") -> dict:
     sal_parsed, sal_label = parse_salary_label(
         salary_text or row.get("notes", ""), profile_name
     )
+    # Extract resume replacement metadata from field_log sentinel entries
+    resume_replaced = "no"
+    resume_replacement_method = ""
+    if field_log:
+        for entry in field_log:
+            if entry.get("field") == "_meta_resume_replaced":
+                resume_replaced = entry.get("status", "no")
+                resume_replacement_method = entry.get("value", "")
+                break
     return {
-        "timestamp":       datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "profile":         profile_name,
-        "company":         row.get("company", ""),
-        "title":           row.get("title", ""),
-        "location":        row.get("location", ""),
-        "salary_parsed":   sal_parsed,
-        "salary_label":    sal_label,
-        "job_url":         row.get("url", ""),
-        "platform":        row.get("platform", ""),
-        "selected_resume": Path(pdf_path).name if pdf_path else "",
-        "resume_score":    f"{score:.3f}",
-        "fit_label":       fit,
-        "matched_keywords": ", ".join(keywords),
-        "cover_letter_used": "yes" if keywords else "no",
-        "status":          status,
-        "screenshot_path": screenshot,
-        "error_notes":     notes,
+        "timestamp":                 datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "profile":                   profile_name,
+        "company":                   row.get("company", ""),
+        "title":                     row.get("title", ""),
+        "location":                  row.get("location", ""),
+        "salary_parsed":             sal_parsed,
+        "salary_label":              sal_label,
+        "job_url":                   row.get("url", ""),
+        "final_url":                 final_url or row.get("url", ""),
+        "source_tier":               row.get("source_tier", 0),
+        "source":                    row.get("source", "csv"),
+        "platform":                  row.get("platform", ""),
+        "ats_platform":              row.get("platform", ""),
+        "apply_method":              apply_method,
+        "selected_resume":           Path(pdf_path).name if pdf_path else "",
+        "resume_score":              f"{score:.3f}",
+        "fit_label":                 fit,
+        "matched_keywords":          ", ".join(keywords),
+        "resume_replaced":           resume_replaced,
+        "resume_replacement_method": resume_replacement_method,
+        "cover_letter_used":         "yes" if keywords else "no",
+        "status":                    status,
+        "screenshot_path":           screenshot,
+        "error_notes":               notes,
     }
 
 
@@ -381,6 +428,10 @@ def process_job(page, context, row: dict, row_num: int,
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         time.sleep(random.uniform(1.0, 2.0))
+        try:
+            dismiss_popups(page)
+        except Exception:
+            pass
         watchdog.ping()
     except Exception as e:
         print_status("ERROR", f"navigation: {e}")
@@ -520,8 +571,10 @@ def process_job(page, context, row: dict, row_num: int,
     if dry_run:
         print_status("DRY_RUN", f"{Path(pdf_path).name} | {score:.2f} | {fit}")
         log_result(profile_name, _make_entry(
-            profile_name, row, "dry_run", pdf_path, score, fit, keywords))
-        stats.record(company, title, score, fit, "dry_run")
+            profile_name, row, "dry_run", pdf_path, score, fit, keywords,
+            apply_method="direct_form"))
+        stats.record(company, title, score, fit, "dry_run",
+                     source_tier=row.get("source_tier", 0))
         applied_urls.add(norm_url)
         return "continue"
 
@@ -582,7 +635,8 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
                 pdf_path: str, field_log: list, platform: str,
                 applied_urls: set, stats: SessionStats, watchdog: Watchdog,
                 score: float, fit: str, keywords: list,
-                dry_run: bool, review: bool) -> str:
+                dry_run: bool, review: bool,
+                apply_method: str = "direct_form") -> str:
     """Shared end-of-job: field summary → submit → confirmation → log."""
     url      = str(row.get("url", ""))
     norm_url = normalize_url(url)
@@ -607,13 +661,22 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
         )
     )
 
+    resume_replaced_bool = any(
+        e.get("field") == "_meta_resume_replaced" and e.get("status") == "yes"
+        for e in field_log
+    )
+    source_tier = row.get("source_tier", 0)
+
     if dry_run:
         print_status("DRY_RUN", "would submit here")
         log_result(profile_name, _make_entry(
             profile_name, row, "dry_run", pdf_path, score, fit,
             keywords, screenshot=scr_filled,
-            notes=f"{filled_count} filled, {skipped_count} skipped"))
-        stats.record(company, title, score, fit, "dry_run")
+            notes=f"{filled_count} filled, {skipped_count} skipped",
+            field_log=field_log, apply_method=apply_method))
+        stats.record(company, title, score, fit, "dry_run",
+                     source_tier=source_tier, apply_method=apply_method,
+                     resume_replaced=resume_replaced_bool)
         applied_urls.add(norm_url)
         return "continue"
 
@@ -630,7 +693,7 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
             print_status("SKIPPED", "manual skip")
             log_result(profile_name, _make_entry(
                 profile_name, row, "skipped_manual", pdf_path, score, fit, keywords,
-                screenshot=scr_filled))
+                screenshot=scr_filled, field_log=field_log, apply_method=apply_method))
             applied_urls.add(norm_url)
             return "continue"
     else:
@@ -643,13 +706,15 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
         if ans == "s":
             log_result(profile_name, _make_entry(
                 profile_name, row, "skipped_manual", pdf_path, score, fit,
-                keywords, screenshot=scr_filled, notes="user stopped"))
+                keywords, screenshot=scr_filled, notes="user stopped",
+                field_log=field_log, apply_method=apply_method))
             return "stop"
         if ans == "n":
             print_status("SKIPPED", "manual skip")
             log_result(profile_name, _make_entry(
                 profile_name, row, "skipped_manual", pdf_path, score, fit,
-                keywords, screenshot=scr_filled))
+                keywords, screenshot=scr_filled, field_log=field_log,
+                apply_method=apply_method))
             applied_urls.add(norm_url)
             return "continue"
 
@@ -671,9 +736,12 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
         print_status("SUBMITTED", "manual")
         log_result(profile_name, _make_entry(
             profile_name, row, "submitted_manually", pdf_path, score, fit,
-            keywords, screenshot=scr,
-            notes=f"{filled_count} filled, {skipped_count} skipped"))
-        stats.record(company, title, score, fit, "submitted_manually")
+            keywords, screenshot=scr, final_url=active_page.url,
+            notes=f"{filled_count} filled, {skipped_count} skipped",
+            field_log=field_log, apply_method=apply_method))
+        stats.record(company, title, score, fit, "submitted_manually",
+                     source_tier=source_tier, apply_method=apply_method,
+                     resume_replaced=resume_replaced_bool)
         applied_urls.add(norm_url)
         return "continue"
 
@@ -687,17 +755,23 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
         print_status("SUBMITTED", conf_detail)
         log_result(profile_name, _make_entry(
             profile_name, row, "submitted", pdf_path, score, fit,
-            keywords, screenshot=scr,
-            notes=f"{filled_count} filled | {conf_detail}"))
-        stats.record(company, title, score, fit, "submitted")
+            keywords, screenshot=scr, final_url=active_page.url,
+            notes=f"{filled_count} filled | {conf_detail}",
+            field_log=field_log, apply_method=apply_method))
+        stats.record(company, title, score, fit, "submitted",
+                     source_tier=source_tier, apply_method=apply_method,
+                     resume_replaced=resume_replaced_bool)
 
     else:  # stuck
         scr = take_screenshot(active_page, company, title, "stuck")
-        print_status("STUCK", f"no confirmation after 10s — marking submit_failed")
+        print_status("STUCK", "no confirmation after 10s — marking submit_failed")
         log_result(profile_name, _make_entry(
             profile_name, row, "submit_failed", pdf_path, score, fit,
-            keywords, screenshot=scr, notes=conf_detail))
-        stats.record(company, title, score, fit, "submit_failed")
+            keywords, screenshot=scr, final_url=active_page.url,
+            notes=conf_detail, field_log=field_log, apply_method=apply_method))
+        stats.record(company, title, score, fit, "submit_failed",
+                     source_tier=source_tier, apply_method=apply_method,
+                     resume_replaced=resume_replaced_bool)
 
     applied_urls.add(norm_url)
     return "continue"
@@ -719,8 +793,12 @@ def main():
                         help="Max jobs per session (default: 50)")
     parser.add_argument("--dry-run",   action="store_true",
                         help="Score + log everything but never submit")
-    parser.add_argument("--min-score", type=float, default=0.05,
+    parser.add_argument("--min-score",      type=float, default=0.05,
                         help="Skip if score < this AND Low Fit (0.0 disables)")
+    parser.add_argument("--companies-only", action="store_true",
+                        help="Only search Tier 1 company career pages (skip job boards)")
+    parser.add_argument("--tier-max",       type=int, default=4,
+                        help="Search up to this tier: 1=companies, 2=+Indeed, 3=+LinkedIn, 4=+Google Jobs")
     args = parser.parse_args()
 
     profile_name = args.profile.lower()
@@ -736,9 +814,11 @@ def main():
     # ── Startup ───────────────────────────────────────────────────────────────
     console.rule("[bold]Job Application Bot[/bold]")
     mode_flags = " ".join(filter(None, [
-        "DISCOVER" if args.discover else "",
-        "REVIEW"   if args.review   else "",
-        "DRY-RUN"  if args.dry_run  else "",
+        "DISCOVER"       if args.discover       else "",
+        "COMPANIES-ONLY" if args.companies_only  else "",
+        f"TIER-MAX={args.tier_max}" if args.tier_max < 4 else "",
+        "REVIEW"         if args.review          else "",
+        "DRY-RUN"        if args.dry_run         else "",
         f"LIMIT={args.limit}",
         f"MIN-SCORE={args.min_score}",
     ]))
@@ -833,7 +913,10 @@ def main():
                 console.print("\n[bold cyan]Starting autonomous job discovery...[/bold cyan]")
                 while jobs_run < args.limit:
                     new_jobs = discover_jobs(
-                        page, context, profile_name, applied_urls, max_per_search=20,
+                        page, context, profile_name, applied_urls,
+                        max_per_search=20,
+                        tier_max=args.tier_max,
+                        companies_only=args.companies_only,
                     )
                     if not new_jobs:
                         console.print("  No new jobs found.")

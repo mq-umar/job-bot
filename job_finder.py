@@ -9,11 +9,12 @@ Autonomous job discovery — two modes:
 2. FIXED SEARCH URLS (fallback):
    Uses hardcoded LinkedIn search URLs if resume extraction finds nothing.
 """
+import random
 import re
 import time
 from collections import Counter
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import pandas as pd
 
@@ -34,6 +35,42 @@ RESUME_FOLDER = {
 SALARY_MIN = {
     "muhammad": 60_000,
     "razia":    110_000,
+}
+
+# Tier 1 — direct company career page search URLs ({query} replaced with URL-encoded terms)
+PRIORITY_COMPANIES = {
+    "muhammad": [
+        {"name": "Microsoft",      "url": "https://careers.microsoft.com/global/en/search-results?q={query}&l=United+States"},
+        {"name": "Google",         "url": "https://careers.google.com/jobs/results/?q={query}&location=New+York"},
+        {"name": "Apple",          "url": "https://jobs.apple.com/en-us/search?search={query}&location=new-york-NYC"},
+        {"name": "Amazon",         "url": "https://amazon.jobs/en/search?query={query}"},
+        {"name": "IBM",            "url": "https://careers.ibm.com/job/search?q={query}&country=US"},
+        {"name": "Home Depot",     "url": "https://careers.homedepot.com/content/US-Jobs/?search={query}"},
+        {"name": "Verizon",        "url": "https://mycareer.verizon.com/jobs/search/?keyword={query}&location=New+York"},
+        {"name": "Broadridge",     "url": "https://jobs.broadridge.com/search/?q={query}"},
+        {"name": "Northwell",      "url": "https://jobs.northwell.edu/search/?q={query}"},
+        {"name": "JPMorgan Chase", "url": "https://careers.jpmorgan.com/us/en/jobs?search={query}"},
+        {"name": "Citi",           "url": "https://jobs.citi.com/search-jobs/{query}/287/1"},
+        {"name": "Morgan Stanley", "url": "https://jobs.morganstanley.com/job-search-results/?q={query}&location=New+York"},
+        {"name": "Bloomberg",      "url": "https://careers.bloomberg.com/job/search?q={query}"},
+        {"name": "Spotify",        "url": "https://boards.greenhouse.io/spotify/jobs"},
+        {"name": "NBC Universal",  "url": "https://jobs.nbcuniversal.com/search/?q={query}"},
+    ],
+    "razia": [
+        {"name": "CrowdStrike",        "url": "https://careers.crowdstrike.com/us/en/search-results?q={query}"},
+        {"name": "Palo Alto Networks", "url": "https://jobs.paloaltonetworks.com/jobs/search?q={query}"},
+        {"name": "SentinelOne",        "url": "https://www.sentinelone.com/jobs/?q={query}"},
+        {"name": "Tenable",            "url": "https://careers.tenable.com/jobs?q={query}"},
+        {"name": "Microsoft",          "url": "https://careers.microsoft.com/global/en/search-results?q={query}+security"},
+        {"name": "IBM",                "url": "https://careers.ibm.com/job/search?q={query}+security&country=US"},
+        {"name": "Deloitte",           "url": "https://apply.deloitte.com/careers/SearchJobs/{query}"},
+        {"name": "FanDuel",            "url": "https://careers.fanduel.com/jobs?q={query}"},
+        {"name": "Morgan Stanley",     "url": "https://jobs.morganstanley.com/job-search-results/?q={query}"},
+        {"name": "JPMorgan Chase",     "url": "https://careers.jpmorgan.com/us/en/jobs?search={query}"},
+        {"name": "Bloomberg",          "url": "https://careers.bloomberg.com/job/search?q={query}"},
+        {"name": "Northwell",          "url": "https://jobs.northwell.edu/search/?q={query}"},
+        {"name": "MSKCC",              "url": "https://careers.mskcc.org/search/?q={query}"},
+    ],
 }
 
 # Fallback LinkedIn searches if reverse-extraction produces nothing
@@ -243,6 +280,156 @@ def _card_text(card, selectors: list) -> str:
     return ""
 
 
+# ── Tier 1: Company career page scraper ───────────────────────────────────────
+
+def _scrape_company_careers(page, company: dict, search_terms: dict,
+                             existing: set, limit: int = 15) -> list:
+    """Best-effort scraper for a company career page. Returns [] on any error."""
+    found   = []
+    name    = company["name"]
+    titles  = search_terms.get("titles", [])
+    query   = quote_plus(" ".join(titles[:2]) if titles else "IT systems administrator")
+    raw_url = company["url"].format(query=query)
+
+    try:
+        page.goto(raw_url, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(3)
+
+        # Broad link selectors that work across different ATS platforms
+        for sel in [
+            "a[href*='/jobs/view/']", "a[href*='/job/']", "a[href*='/jobs/']",
+            "a[href*='/careers/']", "a[href*='/openings/']", "a[href*='/position']",
+            "[class*='job-card'] a", "[class*='job-listing'] a", "[class*='job-item'] a",
+            "[class*='position-card'] a", "[class*='result-card'] a",
+            "li.lv-job-result a", ".job-list-item a", "[data-job-id] a",
+            "h2 a", "h3 a",
+        ]:
+            try:
+                links = page.locator(sel).all()
+                if not links:
+                    continue
+                for link in links[:limit]:
+                    try:
+                        href = link.get_attribute("href") or ""
+                        if not href:
+                            continue
+                        if href.startswith("/"):
+                            base = urlparse(raw_url)
+                            href = f"{base.scheme}://{base.netloc}{href}"
+                        elif not href.startswith("http"):
+                            continue
+                        if href in existing:
+                            continue
+                        text = link.inner_text(timeout=500).strip()[:120]
+                        if not text or len(text) < 4 or len(text) > 150:
+                            continue
+                        found.append({
+                            "url": href, "title": text, "company": name,
+                            "notes": f"Tier 1 — {name}",
+                            "source_tier": 1, "source": "direct_company",
+                        })
+                        existing.add(href)
+                    except Exception:
+                        pass
+                if len(found) >= 3:
+                    break
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"    Career page error ({name}): {e}")
+
+    return found
+
+
+# ── Tier 2: Indeed scraper ────────────────────────────────────────────────────
+
+def _scrape_indeed(page, search_terms: dict, existing: set, limit: int = 20) -> list:
+    """Scrape Indeed full-time job listings for extracted search terms."""
+    found  = []
+    titles = search_terms.get("titles", [])
+    loc    = search_terms.get("location", "New York")
+    if not titles:
+        titles = ["IT support specialist"]
+
+    for title in titles[:3]:
+        query   = quote_plus(title)
+        enc_loc = quote_plus(loc)
+        url = (
+            f"https://www.indeed.com/jobs?q={query}&l={enc_loc}"
+            f"&sc=0kf%3Ajt%28fulltime%29%3B&sort=date"
+        )
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            time.sleep(3)
+            for _ in range(2):
+                try:
+                    page.keyboard.press("End")
+                    time.sleep(1)
+                except Exception:
+                    break
+
+            for sel in [
+                "a.jcs-JobTitle", "h2.jobTitle a", "[data-jk] h2 a",
+                "a[href*='/viewjob']", ".job_seen_beacon a",
+                "[class*='JobTitle'] a", "a[id^='job_']",
+            ]:
+                try:
+                    cards = page.locator(sel).all()
+                    for card in cards[:limit]:
+                        href = card.get_attribute("href") or ""
+                        if not href:
+                            continue
+                        if not href.startswith("http"):
+                            href = "https://www.indeed.com" + href
+                        # Normalise to jk param
+                        parsed = urlparse(href)
+                        from urllib.parse import parse_qs as _pqs
+                        jk = _pqs(parsed.query).get("jk", [""])[0]
+                        clean = f"https://www.indeed.com/viewjob?jk={jk}" if jk else href
+                        if clean in existing or not jk:
+                            continue
+                        text = card.inner_text(timeout=500).strip()[:120]
+                        if text:
+                            found.append({
+                                "url": clean, "title": text, "company": "",
+                                "notes": f"Indeed: {title}",
+                                "source_tier": 2, "source": "indeed",
+                            })
+                            existing.add(clean)
+                    if found:
+                        break
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"    Indeed error: {e}")
+
+    return found
+
+
+# ── Cross-platform deduplication by (company, title) ─────────────────────────
+
+def _deduplicate_by_title_company(jobs: list) -> list:
+    """
+    Remove cross-platform duplicates by normalised (company, title) pairs.
+    When duplicates exist, keep the version from the lowest (best) tier.
+    """
+    seen: dict = {}
+    for job in jobs:
+        co  = re.sub(r"[^a-z0-9]", "", (job.get("company") or "").lower())
+        ti  = re.sub(r"[^a-z0-9]", "", (job.get("title")   or "").lower())[:40]
+        key = (co, ti)
+        if not co and not ti:
+            seen[job.get("url", id(job))] = job
+            continue
+        tier = job.get("source_tier", 9)
+        if key not in seen or tier < seen[key].get("source_tier", 9):
+            seen[key] = job
+
+    deduped = list(seen.values())
+    deduped.sort(key=lambda j: j.get("source_tier", 9))
+    return deduped
+
+
 # ── Salary filter ─────────────────────────────────────────────────────────────
 
 def _parse_max_salary(text: str):
@@ -291,39 +478,84 @@ def _all_known_urls(profile_name: str) -> set:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def discover_jobs(page, context, profile_name: str, applied_urls: set,
-                  max_per_search: int = 20) -> list[dict]:
+                  max_per_search: int = 20,
+                  tier_max: int = 4,
+                  companies_only: bool = False):
     """
-    Full reverse-resume discovery:
-      1. Extract titles/skills from all resumes
-      2. Build search queries
-      3. Scrape LinkedIn + Google Jobs
-      4. Deduplicate and salary-filter
-    Returns new job dicts ready to pass to process_job / append_to_jobs_csv.
+    Tiered job discovery:
+      Tier 1 — direct company career pages (highest priority)
+      Tier 2 — Indeed
+      Tier 3 — LinkedIn Easy Apply
+      Tier 4 — Google Jobs
+
+    Returns new job dicts with source_tier + source fields, deduped cross-platform.
     """
-    existing = _all_known_urls(profile_name) | applied_urls
-    found: list[dict] = []
+    existing  = _all_known_urls(profile_name) | applied_urls
+    all_jobs  = []
 
     print(f"\n  Reading {profile_name}'s resumes to generate search queries...")
     search_terms = extract_search_terms(profile_name)
-    queries      = build_search_queries(search_terms)
-    print(f"  Generated {len(queries)} search queries")
 
-    for q in queries:
-        platform = q["platform"]
-        url      = q["url"]
-        print(f"  Searching [{platform}]: {q['query']} ...")
+    # ── Tier 1: Direct company career pages ──────────────────────────────────
+    if tier_max >= 1:
+        companies = PRIORITY_COMPANIES.get(profile_name, [])
+        print(f"\n  [Tier 1] Searching {len(companies)} company career pages...")
+        for company in companies:
+            print(f"    {company['name']} ...")
+            batch = _scrape_company_careers(page, company, search_terms,
+                                            existing, max_per_search)
+            all_jobs.extend(batch)
+            if batch:
+                print(f"      + {len(batch)} found")
+            time.sleep(random.uniform(1.0, 2.0))
 
-        if platform == "linkedin":
-            batch = _scrape_linkedin(page, url, existing, max_per_search)
-        else:
-            batch = _scrape_google_jobs(page, url, existing, max_per_search)
+    # ── Tier 2: Indeed ────────────────────────────────────────────────────────
+    if tier_max >= 2 and not companies_only:
+        print(f"\n  [Tier 2] Searching Indeed...")
+        batch = _scrape_indeed(page, search_terms, existing, max_per_search)
+        for j in batch:
+            j.setdefault("source_tier", 2)
+            j.setdefault("source", "indeed")
+        all_jobs.extend(batch)
+        print(f"    + {len(batch)} found")
 
-        found.extend(batch)
-        if batch:
-            print(f"    + {len(batch)} new jobs")
+    # ── Tier 3: LinkedIn ──────────────────────────────────────────────────────
+    if tier_max >= 3 and not companies_only:
+        queries = build_search_queries(search_terms)
+        li_queries = [q for q in queries if q["platform"] == "linkedin"]
+        print(f"\n  [Tier 3] Searching LinkedIn ({len(li_queries)} queries)...")
+        for q in li_queries:
+            print(f"    {q['query']} ...")
+            batch = _scrape_linkedin(page, q["url"], existing, max_per_search)
+            for j in batch:
+                j["source_tier"] = 3
+                j["source"]      = "linkedin"
+            all_jobs.extend(batch)
+            if batch:
+                print(f"      + {len(batch)} found")
 
-    print(f"  Total new jobs found: {len(found)}")
-    return found
+    # ── Tier 4: Google Jobs ───────────────────────────────────────────────────
+    if tier_max >= 4 and not companies_only:
+        if tier_max < 3:
+            queries = build_search_queries(search_terms)
+        goog_queries = [q for q in queries if q["platform"] == "google"]
+        print(f"\n  [Tier 4] Searching Google Jobs ({len(goog_queries)} queries)...")
+        for q in goog_queries:
+            print(f"    {q['query']} ...")
+            batch = _scrape_google_jobs(page, q["url"], existing, max_per_search)
+            for j in batch:
+                j["source_tier"] = 4
+                j["source"]      = "google_jobs"
+            all_jobs.extend(batch)
+            if batch:
+                print(f"      + {len(batch)} found")
+
+    # ── Dedup cross-platform ──────────────────────────────────────────────────
+    deduped = _deduplicate_by_title_company(all_jobs)
+    removed = len(all_jobs) - len(deduped)
+    print(f"\n  Total found: {len(all_jobs)} → after dedup: {len(deduped)} "
+          f"({removed} cross-platform dupes removed)")
+    return deduped
 
 
 def append_to_jobs_csv(new_jobs: list[dict]) -> list[dict]:

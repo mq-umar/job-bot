@@ -7,24 +7,17 @@ Playwright-based job application automation for two profiles: **muhammad** and *
 ## Quick start
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
 playwright install chromium
 
-# Apply to jobs in jobs.csv (Muhammad, live)
-python3 main.py --profile muhammad
-
-# Apply to jobs in jobs.csv (Razia, live)
-python3 main.py --profile razia
-
-# Dry-run — fills every field but never clicks Submit
-python3 main.py --profile muhammad --dry-run --limit 10
-
-# Review mode — pause and show a panel before each submit
-python3 main.py --profile muhammad --review
-
-# Auto-discover new jobs from resumes, then apply
+# Discover jobs from resume analysis and apply (Muhammad)
 python3 main.py --profile muhammad --discover
+
+# Razia — discover and apply with review before each submit
+python3 main.py --profile razia --discover --review
+
+# Dry-run first (fills forms, never submits)
+python3 main.py --profile muhammad --discover --dry-run --limit 5
 ```
 
 ---
@@ -34,118 +27,197 @@ python3 main.py --profile muhammad --discover
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--profile` | `muhammad` | Which profile to run (`muhammad` or `razia`) |
-| `--start-id N` | 1 | Skip jobs with ID < N |
-| `--job-id N` | — | Process only this one job ID |
-| `--discover` | off | Discover new jobs from resume text, then apply |
-| `--review` | off | Show summary panel and pause before each submit |
+| `--discover` | off | Auto-discover jobs from resume analysis before applying |
+| `--review` | off | Pause and ask y/n/q before each submit |
+| `--limit N` | 50 | Stop after N applications this session |
 | `--dry-run` | off | Fill every field but skip submit |
-| `--limit N` | unlimited | Stop after N applications this session |
-| `--min-score F` | 0.05 | Skip (log as skipped) only when TF-IDF score < F **and** fit = Low Fit |
+| `--min-score F` | 0.05 | Skip only when TF-IDF score < F **and** fit = Low Fit |
+| `--companies-only` | off | Only search Tier 1 company career pages (skip Indeed/LinkedIn/Google) |
+| `--tier-max N` | 4 | Search up to tier N (1=companies, 2=+Indeed, 3=+LinkedIn, 4=+Google) |
+| `--start-id N` | 1 | Skip jobs with ID < N in jobs.csv |
+| `--job-id N` | — | Process only this one job ID |
 
 ---
 
 ## Apply-everything behavior
 
-The bot applies to **every** job in `jobs.csv` regardless of salary, seniority, or location.
-Salary and fit labels are recorded in the results log **for your review only** — they never block an application.
+The bot applies to **every** job regardless of:
+- Salary (above or below preference)
+- Seniority (Senior/Staff/Lead/Director/VP)
+- Years of experience required
+- Location (remote, hybrid, on-site, any city)
+- Fit score
 
 The only hard skips are:
 - Duplicate URL (already in results log)
-- 404 / closed job page
+- 404 / closed/expired posting
 - Technical navigation error
-- Score below `--min-score` threshold **and** fit label is "Low Fit"
+- Score below `--min-score` **and** fit label is "Low Fit" (opt-in, default 0.05)
+
+---
+
+## Tiered job discovery
+
+When `--discover` is set, the bot searches in this priority order:
+
+| Tier | Source | Description |
+|------|--------|-------------|
+| 1 | Direct company career pages | Microsoft, Google, IBM, JPMorgan, Bloomberg, CrowdStrike, etc. |
+| 2 | Indeed | Full-time filtered, sorted by date |
+| 3 | LinkedIn | Easy Apply filter (non-Easy-Apply jobs handled via redirect) |
+| 4 | Google Jobs | Last resort fallback |
+
+Cross-platform duplicates (same company + title found on multiple sources) are deduplicated, keeping the Tier 1 version.
+
+Use `--companies-only` to run only Tier 1 (best quality, avoids job boards).
+Use `--tier-max 2` to run Tiers 1 + 2 (companies + Indeed only), etc.
+
+---
+
+## Application handling — all scenarios
+
+**Scenario A — Direct form (Greenhouse, Lever, Workday, Ashby, iCIMS, Taleo):**
+Form is on the current page. Fills all fields, uploads resume, submits.
+
+**Scenario B — "Apply on Company Site" redirect (from Indeed/LinkedIn):**
+Clicks the redirect button, switches to the new tab, detects the ATS platform, and applies there.
+
+**Scenario C — LinkedIn Easy Apply:**
+Multi-step modal. Fills contact info, replaces resume, answers screening questions, submits.
+
+**Scenario D — LinkedIn non-Easy-Apply:**
+Treated as Scenario B — clicks Apply, redirects to company site.
+
+---
+
+## Resume replacement on LinkedIn and Indeed
+
+Both platforms store a previously uploaded resume on the account. The bot **always replaces** the stored resume with the job-specific best-match PDF before submitting. Falls back gracefully if the file input cannot be found (logs `failed_used_default`).
 
 ---
 
 ## TF-IDF resume selection
 
-For each job the bot reads the job description, then scores every resume PDF in
-`resumes/{profile}/` using TF-IDF cosine similarity (bigrams, sublinear TF).
-It picks the highest-scoring resume and logs:
+For each job, all resumes in `resumes/{profile}/` are scored against the full job description using TF-IDF cosine similarity (bigrams, sublinear TF). The highest-scoring resume is selected.
 
-- **Score** — cosine similarity 0–1
-- **Fit label** — Strong Fit / Good Fit / Possible Fit / Stretch / Low Fit
-- **Matched keywords** — top shared TF-IDF terms used in the cover letter
-
-| Label | Score |
-|-------|-------|
+| Fit label | Score |
+|-----------|-------|
 | Strong Fit | ≥ 0.65 |
 | Good Fit | ≥ 0.45 |
 | Possible Fit | ≥ 0.30 |
 | Stretch | ≥ 0.15 |
 | Low Fit | < 0.15 |
 
-Company-specific overrides (e.g. InStride, Deloitte, IBM sub-routing) fire before TF-IDF
-when the company name is recognized.
+Fit labels are **for logging only** — they never block an application.
+
+Company-specific overrides (InStride, Deloitte, IBM sub-routing) fire before TF-IDF when the company name is recognized.
 
 ---
 
-## Autonomous discovery (`--discover`)
+## Cover letter auto-generation
 
-When `--discover` is set the bot:
+A short cover letter is generated per job from the top 3 TF-IDF keywords shared between the job description and the selected resume:
 
-1. Reads every resume PDF in `resumes/{profile}/`
-2. Extracts the most frequent job titles and technical skills using regex patterns
-3. Generates LinkedIn Easy Apply and Google Jobs search URLs from those terms
-4. Scrapes each URL for job listings
-5. Deduplicates against `jobs.csv` and all previous results
-6. Appends new jobs to `jobs.csv`
-7. Immediately applies to each new job
+> "I am applying for the Systems Administrator role at Acme Corp. My background in azure, powershell, active directory aligns with your requirements. I would welcome the opportunity to discuss how I can contribute to your team."
+
+Filled into any "cover letter", "why are you interested", or open text field.
+
+---
+
+## Cookie / popup auto-dismissal
+
+Before interacting with any page, the bot automatically dismisses:
+- Cookie consent banners ("Accept All", "I Agree", etc.)
+- Newsletter and notification popups
+- Generic modal overlays
+
+If dismissal fails, the bot logs it and continues.
 
 ---
 
 ## Duplicate prevention
 
-Every submitted URL is normalized (tracking params stripped) before comparison.
-Results are checked against both `jobs.csv` and `output/results_{profile}.csv` so
-re-running the bot never double-applies.
-
----
-
-## Cover letters
-
-Cover letters are generated from the top 3 matched TF-IDF keywords shared between the
-job description and the selected resume. Example:
-
-> "I am applying for the Systems Administrator role at Acme Corp. My background in azure,
-> powershell, active directory aligns with your requirements. I would welcome the
-> opportunity to discuss how I can contribute to your team."
+- URLs are normalized (tracking params stripped) before comparison
+- Cross-platform duplicates are matched by normalized (company, title) pair
+- All applied URLs are tracked in `output/results_{profile}.csv` across sessions
 
 ---
 
 ## Review mode
 
-`--review` prints a Rich summary panel before each submit:
+`--review` prints a panel before each submit:
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Job #12 · Company · Title                      │
-│  Resume : C2_Systems_Administrator.pdf          │
-│  Score  : 0.512  Fit: Good Fit                  │
-│  Keywords: azure, powershell, active directory  │
-│  Platform: linkedin                             │
-└─────────────────────────────────────────────────┘
-Press Enter to submit, 's' to skip, 'q' to quit:
+┌──────────────────────────────────────────────────────────────┐
+│  Company:   Acme Corp                                        │
+│  Title:     Systems Administrator                            │
+│  Platform:  greenhouse                                       │
+│  Salary:    $85,000 (above_target)                           │
+│  Resume:    C2_Systems_Administrator.pdf                     │
+│  Score:     0.51 — Good Fit                                  │
+│  Keywords:  azure, powershell, active directory              │
+│  URL:       https://boards.greenhouse.io/acme/jobs/123       │
+└──────────────────────────────────────────────────────────────┘
+  Apply? (y/n/q):
 ```
 
 ---
 
 ## Results logging
 
-Every job attempt is appended to two files:
+Every job attempt is written to two files:
 
 | File | Format |
 |------|--------|
 | `output/results_{profile}.csv` | CSV, one row per job |
 | `output/results_{profile}.jsonl` | JSONL, one JSON object per job |
 
-Fields logged: timestamp, profile, company, title, location, salary (parsed),
-salary label (above/at/below/not listed target), job URL, platform, selected resume,
-TF-IDF score, fit label, matched keywords, cover letter used, status, screenshot path,
-error notes.
+Fields: timestamp, profile, company, title, location, salary (parsed + label),
+job URL, final URL, source tier, source, platform, ATS platform, apply method,
+selected resume, TF-IDF score, fit label, matched keywords,
+resume replaced (yes/no + method), cover letter used, status, screenshot path, error notes.
 
-Screenshots are saved to `output/screenshots/` as
-`{timestamp}_{company}_{title}_{suffix}.png`.
+Screenshots saved to `output/screenshots/` as `{timestamp}_{company}_{title}_{suffix}.png`.
+
+---
+
+## Run summary
+
+Printed at the end of every run:
+
+```
+  Jobs discovered by tier:
+    Direct company pages: 12
+    Indeed: 8
+    LinkedIn: 15
+    Google Jobs: 3
+
+  Duplicates skipped (already applied): 4
+  Jobs scored: 34
+
+  Applications attempted:
+    Total: 34
+    direct_form: 20
+    easy_apply: 10
+    company_site_redirect: 4
+
+  Submitted: 31
+    Resume replaced successfully: 28
+    Used account default resume: 3
+  Submit failed: 3
+  Manual CAPTCHA solved: 1
+  Errors: 0
+  Dry run (not submitted): 0
+
+  By fit label:
+    Strong Fit: 4
+    Good Fit: 11
+    Possible Fit: 9
+    Stretch: 7
+    Low Fit: 3
+
+  Top 10 by resume score: ...
+```
 
 ---
 
@@ -154,10 +226,10 @@ Screenshots are saved to `output/screenshots/` as
 ```
 job-bot/
 ├── main.py                  # Orchestrator + CLI
-├── form_filler.py           # Field detection + form filling
+├── form_filler.py           # Field detection, form filling, resume replacement
 ├── resume_selector.py       # TF-IDF resume scoring + selection
-├── job_finder.py            # Autonomous job discovery
-├── jobs.csv                 # Job queue (add rows here)
+├── job_finder.py            # Tiered job discovery (4 tiers)
+├── jobs.csv                 # Manual job queue (add rows here)
 ├── requirements.txt
 ├── config/
 │   ├── muhammad_profile.json
@@ -165,7 +237,7 @@ job-bot/
 ├── resumes/
 │   ├── muhammad/            # 39+ resume PDFs
 │   └── razia/               # 8 resume PDFs
-├── browser_profile/         # Persistent Playwright profile (gitignored)
+├── browser_profile/         # Persistent Playwright sessions (gitignored)
 └── output/                  # Results CSV/JSONL + screenshots (gitignored)
 ```
 
@@ -180,20 +252,12 @@ id,url,company,title,priority,notes
 6,https://boards.greenhouse.io/acme/jobs/12345,Acme Corp,Backend Engineer,HIGH,Remote $120K
 ```
 
-The `notes` field is parsed for salary info (for logging only).
+The `notes` field is parsed for salary (for logging only — never blocks application).
 
 ---
 
 ## Profile config
 
 `config/muhammad_profile.json` and `config/razia_profile.json` contain personal info
-(name, email, phone, address, LinkedIn, work authorization, etc.) used to fill
-application forms.
-
----
-
-## Requirements
-
-- Python 3.9+
-- `playwright`, `playwright-stealth`, `pandas`, `rich`, `scikit-learn`, `numpy`,
-  `pypdf`, `python-dotenv`
+used to fill application forms: name, email, phone, address, LinkedIn, work authorization,
+EEO fields, salary expectations.
