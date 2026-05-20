@@ -84,7 +84,16 @@ _RAZIA_COVER = (
 )
 
 
-def get_cover_letter(title: str, company: str, resume_name: str, profile_name: str) -> str:
+def get_cover_letter(title: str, company: str, resume_name: str, profile_name: str,
+                     matched_keywords=None) -> str:
+    if matched_keywords:
+        # Use actual JD-matched terms for a more targeted cover letter
+        kw_str = ", ".join(matched_keywords[:3]) or "technology and problem-solving"
+        return (
+            f"I am applying for the {title or 'this'} role at {company or 'your organization'}. "
+            f"My background in {kw_str} aligns with your requirements. "
+            f"I would welcome the opportunity to discuss how I can contribute to your team."
+        )
     skills   = SKILLS_BY_RESUME.get(resume_name, "IT support, systems administration, and security")
     template = _RAZIA_COVER if profile_name == "razia" else _MUHAMMAD_COVER
     return template.format(
@@ -250,7 +259,8 @@ def _is_salary_label(label_lower: str) -> bool:
 # ── Profile value lookup ──────────────────────────────────────────────────────
 
 def _profile_value(label_lower: str, profile: dict, profile_name: str,
-                   resume_name: str = "", company: str = "", title: str = "") -> Optional[str]:
+                   resume_name: str = "", company: str = "", title: str = "",
+                   matched_keywords=None) -> Optional[str]:
     """Map a label fragment to its profile value. Returns None if no match."""
     p   = profile
     edu = p.get("education", {})
@@ -339,7 +349,7 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
 
     # Cover letter / open-text interest question
     if _is_cover_letter_label(label_lower):
-        return get_cover_letter(title, company, resume_name, profile_name)
+        return get_cover_letter(title, company, resume_name, profile_name, matched_keywords)
 
     return None
 

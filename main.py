@@ -4,18 +4,32 @@ main.py — Job Application Bot
 
 Usage:
   python main.py --profile muhammad
-  python main.py --profile razia
-  python main.py --profile muhammad --job-id 1
-  python main.py --profile muhammad --discover    # auto-finds new jobs after CSV exhausted
+  python main.py --profile muhammad --discover
+  python main.py --profile muhammad --discover --review
+  python main.py --profile muhammad --discover --limit 25
+  python main.py --profile muhammad --discover --dry-run
+  python main.py --profile razia --discover
+  python main.py --profile razia --discover --review
+
+Flags:
+  --profile    : muhammad or razia
+  --discover   : auto-find new jobs from resume text before applying
+  --review     : show each job, ask y/n/q before submitting
+  --limit N    : max jobs per session (default: 50)
+  --dry-run    : score + log everything, never actually submit
+  --min-score  : skip if score < this AND fit label is Low Fit (default: 0.05)
+                 set to 0.0 to disable entirely
 """
 import argparse
 import csv
 import json
 import random
+import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 import pandas as pd
 from playwright.sync_api import sync_playwright
@@ -30,21 +44,103 @@ from form_filler import (
     find_submit_button, parse_max_salary, wait_for_submission_confirmation,
 )
 from job_finder import append_to_jobs_csv, discover_jobs
-from resume_selector import pick_resume, verify_resumes
+from resume_selector import fit_label, pick_resume_with_details, verify_resumes
 
 console = Console()
 
 BASE_DIR     = Path(__file__).parent
 OUTPUT_DIR   = BASE_DIR / "output"
 BROWSER_PROF = BASE_DIR / "browser_profile"
-MAX_JOB_SECS = 60  # watchdog: seconds before force-skipping a stuck job
+MAX_JOB_SECS = 60
+
+# URL params stripped for deduplication
+_STRIP_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+    "from", "ref", "src", "tracking", "gh_src", "trk",
+    "currentJobId", "tk", "hl", "refId", "trackingId",
+}
+
+
+# ── URL normalization ─────────────────────────────────────────────────────────
+
+def normalize_url(url: str) -> str:
+    """Strip tracking params and trailing slash for deduplication."""
+    try:
+        p      = urlparse(url)
+        params = {k: v for k, v in parse_qs(p.query).items()
+                  if k.lower() not in _STRIP_PARAMS}
+        clean  = urlunparse(p._replace(query=urlencode(params, doseq=True)))
+        return clean.rstrip("/")
+    except Exception:
+        return url.rstrip("/")
+
+
+# ── Session stats ─────────────────────────────────────────────────────────────
+
+class SessionStats:
+    def __init__(self):
+        self.discovered    = 0
+        self.duplicates    = 0
+        self.scored        = 0
+        self.attempted     = 0
+        self.submitted     = 0
+        self.submit_failed = 0
+        self.captcha       = 0
+        self.errors        = 0
+        self.dry_run       = 0
+        self.by_fit: dict  = {k: 0 for k in
+                              ("Strong Fit", "Good Fit", "Possible Fit", "Stretch", "Low Fit")}
+        self.top_jobs: list = []
+
+    def record(self, company: str, title: str, score: float,
+               fit: str, status: str):
+        self.scored += 1
+        self.by_fit[fit] = self.by_fit.get(fit, 0) + 1
+        if status in ("submitted", "submitted_manually"):
+            self.submitted += 1
+        elif status == "submit_failed":
+            self.submit_failed += 1
+        elif status == "error":
+            self.errors += 1
+        elif status == "dry_run":
+            self.dry_run += 1
+        elif status not in ("skipped_manual", "already_applied",
+                            "watchdog_timeout"):
+            self.attempted += 1
+        self.top_jobs.append((company, title, score, fit))
+        self.top_jobs.sort(key=lambda x: x[2], reverse=True)
+        self.top_jobs = self.top_jobs[:10]
+
+    def print_summary(self):
+        console.rule("[bold]Run Summary[/bold]")
+        rows = [
+            ("Jobs discovered",        self.discovered),
+            ("Duplicates skipped",     self.duplicates),
+            ("Jobs scored",            self.scored),
+            ("Applications attempted", self.attempted),
+            ("Submitted",              self.submitted),
+            ("Submit failed",          self.submit_failed),
+            ("Captcha interventions",  self.captcha),
+            ("Errors",                 self.errors),
+            ("Dry run (not submitted)",self.dry_run),
+        ]
+        for label, val in rows:
+            style = "green" if label == "Submitted" and val else "default"
+            console.print(f"  {label}: [{style}]{val}[/{style}]")
+
+        console.print("\n  By fit label:")
+        for lbl, count in self.by_fit.items():
+            console.print(f"    {lbl}: {count}")
+
+        if self.top_jobs:
+            console.print("\n  Top 10 by resume score:")
+            for i, (co, ti, sc, fl) in enumerate(self.top_jobs, 1):
+                console.print(f"    {i:2}. {co} — {ti} (score: {sc:.2f}, {fl})")
 
 
 # ── Watchdog ──────────────────────────────────────────────────────────────────
 
 class Watchdog:
-    """Tracks elapsed time since last ping. Fires after MAX_JOB_SECS of inactivity."""
-
     def __init__(self, timeout_s: float = MAX_JOB_SECS):
         self._last  = time.time()
         self._limit = timeout_s
@@ -63,13 +159,13 @@ class Watchdog:
 # ── Status printing ───────────────────────────────────────────────────────────
 
 _STATUS_STYLES = {
-    "SUBMITTED":      "[bold green]",
-    "SKIPPED":        "[yellow]",
-    "STUCK":          "[bold red]",
-    "ERROR":          "[red]",
-    "ALREADY_APPLIED":"[dim]",
-    "SALARY_GATE":    "[yellow]",
-    "SUBMIT_FAILED":  "[bold red]",
+    "SUBMITTED":       "[bold green]",
+    "SKIPPED":         "[yellow]",
+    "STUCK":           "[bold red]",
+    "ERROR":           "[red]",
+    "ALREADY_APPLIED": "[dim]",
+    "SUBMIT_FAILED":   "[bold red]",
+    "DRY_RUN":         "[cyan]",
 }
 
 def print_status(tag: str, detail: str = ""):
@@ -79,15 +175,39 @@ def print_status(tag: str, detail: str = ""):
     console.print(f"  {style}[{tag}]{close}{suffix}")
 
 
+# ── Salary parsing (logging only) ─────────────────────────────────────────────
+
+_SALARY_TARGET = {"muhammad": 75_000, "razia": 110_000}
+
+def parse_salary_label(text: str, profile_name: str) -> tuple[str, str]:
+    """
+    Returns (parsed_salary_str, label) where label is
+    above_target / at_target / below_target / not_listed.
+    """
+    text = (text or "").replace(",", "")
+    # Hourly detection
+    hourly_m = re.search(r"\$(\d+\.?\d*)\s*[-–/]?\s*\$?(\d+\.?\d*)?\s*/?\s*hr", text, re.I)
+    if hourly_m:
+        hi = float(hourly_m.group(2) or hourly_m.group(1))
+        annual = int(hi * 2080)
+    else:
+        annual = parse_max_salary(text) or 0
+
+    if not annual:
+        return "not_listed", "not_listed"
+
+    target = _SALARY_TARGET.get(profile_name, 75_000)
+    label  = ("above_target" if annual > target * 1.05
+              else "at_target" if annual >= target * 0.95
+              else "below_target")
+    return f"${annual:,}", label
+
+
 # ── Profile loading ───────────────────────────────────────────────────────────
 
 def load_profile(name: str) -> dict:
-    # Prefer config/ directory, fall back to legacy location
-    paths = [
-        BASE_DIR / "config" / f"{name}_profile.json",
-        BASE_DIR / name / f"{name}_profile.json",
-    ]
-    for path in paths:
+    for path in [BASE_DIR / "config" / f"{name}_profile.json",
+                 BASE_DIR / name / f"{name}_profile.json"]:
         if path.exists():
             with open(path) as f:
                 data = json.load(f)
@@ -104,61 +224,96 @@ def load_profile(name: str) -> dict:
 # ── Deduplication ─────────────────────────────────────────────────────────────
 
 def load_applied_urls(profile_name: str) -> set:
-    """Return all URLs already submitted/skipped from results CSV."""
     results_csv = OUTPUT_DIR / f"results_{profile_name}.csv"
-    applied: set[str] = set()
+    applied: set = set()
     if not results_csv.exists():
         return applied
     try:
         with open(results_csv, newline="") as f:
             for row in csv.DictReader(f):
                 status = row.get("status", "").lower()
-                url    = row.get("url", "").strip()
-                if url and status in ("submitted", "submitted_manually",
-                                      "skipped", "below salary minimum",
-                                      "submit_failed", "watchdog_timeout"):
+                url    = normalize_url(row.get("job_url", row.get("url", "")).strip())
+                if url and status not in ("error",):
                     applied.add(url)
     except Exception:
         pass
     return applied
 
 
-# ── Salary gate ───────────────────────────────────────────────────────────────
-
-def check_salary_gate(profile: dict, notes: str, jd_text: str = "") -> tuple[bool, str]:
-    minimum = profile.get("salary_minimum", 0)
-    if not minimum:
-        return False, ""
-    max_found = parse_max_salary(notes) or parse_max_salary(jd_text[:500])
-    if max_found and max_found < minimum:
-        return True, f"max ${max_found:,} < minimum ${minimum:,}"
-    return False, ""
-
-
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-def log_result(profile_name: str, row: dict, status: str,
-               pdf_path: str, notes: str = ""):
+_CSV_FIELDS = [
+    "timestamp", "profile", "company", "title", "location", "salary_parsed",
+    "salary_label", "job_url", "platform", "selected_resume", "resume_score",
+    "fit_label", "matched_keywords", "cover_letter_used", "status",
+    "screenshot_path", "error_notes",
+]
+
+def log_result(profile_name: str, entry: dict):
+    """Write to both results_{profile}.csv and results_{profile}.jsonl."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    results_csv = OUTPUT_DIR / f"results_{profile_name}.csv"
-    fieldnames  = ["timestamp", "id", "company", "title", "url",
-                   "platform", "resume_pdf", "status", "notes"]
-    exists = results_csv.exists()
-    with open(results_csv, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    entry.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    entry.setdefault("profile",   profile_name)
+
+    # CSV
+    csv_path = OUTPUT_DIR / f"results_{profile_name}.csv"
+    exists   = csv_path.exists()
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS, extrasaction="ignore")
         if not exists:
             writer.writeheader()
-        writer.writerow({
-            "timestamp":  datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "id":         row.get("id", ""),
-            "company":    row.get("company", ""),
-            "title":      row.get("title", ""),
-            "url":        row.get("url", ""),
-            "platform":   row.get("platform", ""),
-            "resume_pdf": pdf_path,
-            "status":     status,
-            "notes":      notes,
-        })
+        writer.writerow(entry)
+
+    # JSONL
+    jsonl_path = OUTPUT_DIR / f"results_{profile_name}.jsonl"
+    with open(jsonl_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def _make_entry(profile_name: str, row: dict, status: str,
+                pdf_path: str, score: float, fit: str,
+                keywords: list, screenshot: str = "",
+                notes: str = "", salary_text: str = "") -> dict:
+    sal_parsed, sal_label = parse_salary_label(
+        salary_text or row.get("notes", ""), profile_name
+    )
+    return {
+        "timestamp":       datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "profile":         profile_name,
+        "company":         row.get("company", ""),
+        "title":           row.get("title", ""),
+        "location":        row.get("location", ""),
+        "salary_parsed":   sal_parsed,
+        "salary_label":    sal_label,
+        "job_url":         row.get("url", ""),
+        "platform":        row.get("platform", ""),
+        "selected_resume": Path(pdf_path).name if pdf_path else "",
+        "resume_score":    f"{score:.3f}",
+        "fit_label":       fit,
+        "matched_keywords": ", ".join(keywords),
+        "cover_letter_used": "yes" if keywords else "no",
+        "status":          status,
+        "screenshot_path": screenshot,
+        "error_notes":     notes,
+    }
+
+
+# ── Screenshot helper ─────────────────────────────────────────────────────────
+
+def take_screenshot(page, company: str, title: str, suffix: str) -> str:
+    ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe  = re.sub(r"[^\w]+", "_", f"{company}_{title}")[:60]
+    fname = f"{ts}_{safe}_{suffix}.png"
+    screenshots_dir = OUTPUT_DIR / "screenshots"
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    path  = str(screenshots_dir / fname)
+    try:
+        page.screenshot(path=path, timeout=60000, animations="disabled")
+        console.print(f"  Screenshot: {fname}")
+    except Exception as e:
+        console.print(f"  [yellow]Screenshot skipped: {e}[/yellow]")
+        return ""
+    return path
 
 
 # ── Field log summary ─────────────────────────────────────────────────────────
@@ -172,243 +327,10 @@ def print_field_summary(field_log: list):
         console.print(f"    • {x['field']}: {x.get('value','')[:80]}")
     if skipped:
         console.print(f"  Skipped ({len(skipped)}):", style="yellow")
-        for x in skipped:
-            console.print(f"    • {x['field']} — {x.get('note','')}")
     if errors:
         console.print(f"  Errors ({len(errors)}):", style="red")
         for x in errors:
             console.print(f"    • {x['field']} — {x.get('note','')}")
-
-
-# ── Screenshot helper ─────────────────────────────────────────────────────────
-
-def take_screenshot(page, path: str):
-    try:
-        page.screenshot(path=path, timeout=60000, animations="disabled")
-        console.print(f"  Screenshot: {path}")
-    except Exception as e:
-        console.print(f"  [yellow]Screenshot skipped: {e}[/yellow]")
-
-
-# ── Core job processor ────────────────────────────────────────────────────────
-
-def process_job(page, context, row: dict, row_num: int,
-                profile: dict, profile_name: str,
-                applied_urls: set) -> str:
-    """
-    Process one job. Returns "continue" | "stop".
-    Handles: deduplication, Indeed modal/new-tab, form fill, watchdog,
-    submit confirmation, and clear status reporting.
-    """
-    url     = str(row.get("url", "")).strip()
-    company = str(row.get("company", "Unknown")).strip()
-    title   = str(row.get("title",   "Unknown")).strip()
-    notes   = str(row.get("notes",   ""))
-    pdf_path = ""
-
-    screenshots_dir = OUTPUT_DIR / "screenshots" / profile_name
-    screenshots_dir.mkdir(parents=True, exist_ok=True)
-
-    console.rule(f"[bold blue]Job {row_num}: {company} — {title}[/bold blue]")
-    console.print(f"  URL: {url}")
-
-    watchdog = Watchdog(MAX_JOB_SECS)
-
-    # ── 1. Deduplication ─────────────────────────────────────────────────────
-    if url in applied_urls:
-        print_status("ALREADY_APPLIED")
-        return "continue"
-
-    # ── 2. Navigate ──────────────────────────────────────────────────────────
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(2)
-        watchdog.ping()
-    except Exception as e:
-        print_status("ERROR", f"navigation: {e}")
-        log_result(profile_name, {**row, "platform": "unknown"},
-                   "error", "", f"nav error: {e}")
-        return "continue"
-
-    platform = detect_platform(page.url)
-    row["platform"] = platform
-    console.print(f"  Platform: [cyan]{platform}[/cyan]")
-
-    # ── 3. Indeed handling ────────────────────────────────────────────────────
-    active_page = page
-    if platform == "indeed":
-        try:
-            page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            pass
-        watchdog.ping()
-
-        if "indeed.com" not in page.url:
-            # Redirected before we even clicked — treat as company ATS
-            platform = detect_platform(page.url)
-            row["platform"] = platform
-            console.print(f"  Redirected: [cyan]{platform}[/cyan]  ({page.url[:80]})")
-        else:
-            jd_early  = extract_job_description(page, "indeed")
-            pdf_path  = pick_resume(title, notes, profile_name, company, jd_early)
-            console.print(f"  Resume: [cyan]{Path(pdf_path).name}[/cyan]")
-
-            log: list = []
-            mode = fill_indeed_easy_apply(
-                page, context, profile, profile_name, pdf_path, log, company, title,
-            )
-            watchdog.ping()
-            console.print(f"  Indeed mode: [cyan]{mode}[/cyan]")
-
-            if mode == "company_site":
-                active_page = context.pages[-1]
-                platform    = detect_platform(active_page.url)
-                row["platform"] = platform
-                console.print(f"  New tab: [cyan]{platform}[/cyan]  ({active_page.url[:80]})")
-
-            elif mode == "easy_apply":
-                return _finish_job(
-                    active_page, row, row_num, profile, profile_name,
-                    pdf_path, log, "indeed", applied_urls,
-                    screenshots_dir, watchdog,
-                )
-            # mode == "no_button" → fall through to generic fill
-
-    # ── 4. Extract JD (or use early extract from Indeed) ─────────────────────
-    if not pdf_path:
-        jd_text  = extract_job_description(active_page, platform)
-        console.print(f"  JD: {len(jd_text)} chars")
-        pdf_path = pick_resume(title, notes, profile_name, company, jd_text)
-        console.print(f"  Resume: [cyan]{Path(pdf_path).name}[/cyan]")
-    else:
-        jd_text = ""
-
-    watchdog.ping()
-
-    # ── 5. Salary gate (Razia) ────────────────────────────────────────────────
-    skip, reason = check_salary_gate(profile, notes, jd_text)
-    if skip:
-        print_status("SALARY_GATE", reason)
-        log_result(profile_name, row, "below salary minimum", pdf_path, reason)
-        applied_urls.add(url)
-        return "continue"
-
-    # ── 6. reCAPTCHA before fill ──────────────────────────────────────────────
-    if detect_recaptcha(active_page):
-        print("\n  [CAPTCHA] Solve it in the browser, then press Enter...")
-        input("  > ")
-        watchdog.ping()
-
-    # ── 7. Fill form ──────────────────────────────────────────────────────────
-    if watchdog.timed_out:
-        print_status("STUCK", f"watchdog fired before fill ({watchdog.elapsed():.0f}s)")
-        log_result(profile_name, row, "watchdog_timeout", pdf_path, "timed out before fill")
-        applied_urls.add(url)
-        return "continue"
-
-    console.print("  Filling form...")
-    try:
-        field_log = fill_form(
-            active_page, platform, profile, profile_name,
-            pdf_path, company, title,
-        )
-        watchdog.ping()
-    except Exception as e:
-        field_log = [{"field": "fill_form", "status": "error", "note": str(e)}]
-
-    return _finish_job(
-        active_page, row, row_num, profile, profile_name,
-        pdf_path, field_log, platform, applied_urls,
-        screenshots_dir, watchdog,
-    )
-
-
-def _finish_job(active_page, row: dict, row_num: int,
-                profile: dict, profile_name: str,
-                pdf_path: str, field_log: list, platform: str,
-                applied_urls: set, screenshots_dir: Path,
-                watchdog: Watchdog) -> str:
-    """
-    Shared end-of-job path: summary panel → y/n/s → submit with confirmation.
-    Returns "continue" | "stop".
-    """
-    url = str(row.get("url", ""))
-
-    print_field_summary(field_log)
-    filled_count  = sum(1 for x in field_log if x["status"] == "filled")
-    skipped_count = sum(1 for x in field_log if x["status"] == "skipped")
-
-    take_screenshot(active_page, str(screenshots_dir / f"{row_num:02d}_filled.png"))
-
-    console.print(
-        Panel(
-            f"[bold]Profile:[/bold]  {profile['full_name']}\n"
-            f"[bold]Company:[/bold]  {row.get('company','')}\n"
-            f"[bold]Title:[/bold]    {row.get('title','')}\n"
-            f"[bold]Resume:[/bold]   {Path(pdf_path).name}\n"
-            f"[bold]Platform:[/bold] {platform}\n"
-            f"[bold]Fields:[/bold]   {filled_count} filled, {skipped_count} skipped\n\n"
-            "[yellow]Review the form. Make manual corrections before answering.[/yellow]",
-            title="[bold green]Form Filled — Ready for Review[/bold green]",
-        )
-    )
-
-    while True:
-        answer = input("  Submit? (y / n / s=stop all): ").strip().lower()
-        if answer in ("y", "n", "s"):
-            break
-        console.print("  Enter y, n, or s.")
-    watchdog.ping()
-
-    if answer == "s":
-        log_result(profile_name, row, "skipped", pdf_path, "user stopped loop")
-        return "stop"
-
-    if answer == "n":
-        print_status("SKIPPED", "user skipped")
-        log_result(profile_name, row, "skipped", pdf_path, "user skipped")
-        applied_urls.add(url)
-        return "continue"
-
-    # answer == "y" — submit
-    if detect_recaptcha(active_page):
-        print("\n  [CAPTCHA] Solve before submit, then press Enter...")
-        input("  > ")
-        watchdog.ping()
-
-    baseline_url = active_page.url
-    btn_found    = click_submit(active_page, platform)
-
-    if not btn_found:
-        console.print("  [yellow]Submit button not found — submit manually.[/yellow]")
-        input("  Press Enter when done...")
-        take_screenshot(active_page, str(screenshots_dir / f"{row_num:02d}_manual.png"))
-        print_status("SUBMITTED", "manual")
-        log_result(profile_name, row, "submitted_manually", pdf_path,
-                   f"{filled_count} filled, {skipped_count} skipped")
-        applied_urls.add(url)
-        return "continue"
-
-    # Wait for confirmation (max 10s)
-    conf_status, conf_detail = wait_for_submission_confirmation(
-        active_page, baseline_url, timeout_s=10,
-    )
-
-    if conf_status in ("confirmed", "url_changed"):
-        take_screenshot(active_page, str(screenshots_dir / f"{row_num:02d}_submitted.png"))
-        print_status("SUBMITTED", conf_detail)
-        log_result(profile_name, row, "submitted", pdf_path,
-                   f"{filled_count} filled, {skipped_count} skipped | {conf_detail}")
-        applied_urls.add(url)
-
-    elif conf_status == "stuck":
-        take_screenshot(active_page, str(screenshots_dir / f"{row_num:02d}_stuck.png"))
-        print_status("STUCK", "form unchanged after 10s — marking submit_failed")
-        log_result(profile_name, row, "submit_failed", pdf_path,
-                   f"stuck on form after click | {conf_detail}")
-        applied_urls.add(url)
-
-    return "continue"
 
 
 # ── Startup verification ──────────────────────────────────────────────────────
@@ -416,10 +338,8 @@ def _finish_job(active_page, row: dict, row_num: int,
 def print_startup_verification(profile_name: str):
     found, total, missing = verify_resumes(profile_name)
     if missing:
-        console.print(
-            f"  Resumes: [yellow]{found}/{total} found[/yellow] "
-            f"([red]{len(missing)} missing[/red])"
-        )
+        console.print(f"  Resumes: [yellow]{found}/{total}[/yellow] "
+                      f"([red]{len(missing)} missing[/red])")
         for m in missing[:5]:
             console.print(f"    [red]✗[/red] {m}")
         if len(missing) > 5:
@@ -428,15 +348,379 @@ def print_startup_verification(profile_name: str):
         console.print(f"  Resumes: [green]{found}/{total} all found[/green]")
 
 
+# ── Core job processor ────────────────────────────────────────────────────────
+
+def process_job(page, context, row: dict, row_num: int,
+                profile: dict, profile_name: str,
+                applied_urls: set, stats: SessionStats,
+                dry_run: bool = False, review: bool = False,
+                min_score: float = 0.05) -> str:
+    """
+    Returns "continue" | "stop".
+    Applies to EVERY job — never skips based on salary, seniority, or score
+    (except score < min_score AND Low Fit, which is opt-in).
+    """
+    url     = str(row.get("url", "")).strip()
+    company = str(row.get("company", "Unknown")).strip()
+    title   = str(row.get("title",   "Unknown")).strip()
+    notes   = str(row.get("notes",   ""))
+    norm_url = normalize_url(url)
+
+    console.rule(f"[bold blue]Job {row_num}: {company} — {title}[/bold blue]")
+    console.print(f"  URL: {url}")
+
+    watchdog = Watchdog(MAX_JOB_SECS)
+
+    # ── 1. Deduplication ─────────────────────────────────────────────────────
+    if norm_url in applied_urls:
+        print_status("ALREADY_APPLIED")
+        stats.duplicates += 1
+        return "continue"
+
+    # ── 2. Navigate ──────────────────────────────────────────────────────────
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(random.uniform(1.0, 2.0))
+        watchdog.ping()
+    except Exception as e:
+        print_status("ERROR", f"navigation: {e}")
+        log_result(profile_name, _make_entry(
+            profile_name, row, "error", "", 0.0, "Low Fit", [], notes=f"nav: {e}"))
+        stats.errors += 1
+        return "continue"
+
+    platform = detect_platform(page.url)
+    row["platform"] = platform
+    console.print(f"  Platform: [cyan]{platform}[/cyan]")
+
+    # ── 3. Extract JD ────────────────────────────────────────────────────────
+    # Check if page is 404 or closed — only hard skip
+    try:
+        body_low = page.inner_text("body").lower()[:500]
+        if any(kw in body_low for kw in ["page not found", "job is no longer",
+                                          "position has been filled",
+                                          "this job is closed", "404"]):
+            print_status("SKIPPED", "posting closed/404")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "closed", "", 0.0, "Low Fit", [], notes="posting closed"))
+            applied_urls.add(norm_url)
+            return "continue"
+    except Exception:
+        pass
+
+    # ── 4. Indeed handling ───────────────────────────────────────────────────
+    active_page = page
+    pdf_path    = ""
+    jd_text     = ""
+
+    if platform == "indeed":
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
+        watchdog.ping()
+
+        if "indeed.com" not in page.url:
+            platform = detect_platform(page.url)
+            row["platform"] = platform
+            console.print(f"  Redirected: [cyan]{platform}[/cyan]")
+        else:
+            jd_text   = extract_job_description(page, "indeed")
+            pdf_path, score, fit, keywords, fname = pick_resume_with_details(
+                title, notes, profile_name, company, jd_text,
+            )
+            _print_resume_selection(title, company, fname, score, fit, keywords)
+
+            # Score gate (only if enabled and Low Fit)
+            if min_score > 0 and score < min_score and fit == "Low Fit":
+                print_status("SKIPPED", f"score {score:.3f} < {min_score} (Low Fit)")
+                log_result(profile_name, _make_entry(
+                    profile_name, row, "skipped_low_fit", pdf_path,
+                    score, fit, keywords, notes=f"score {score:.3f}"))
+                applied_urls.add(norm_url)
+                return "continue"
+
+            indeed_log: list = []
+            mode = fill_indeed_easy_apply(
+                page, context, profile, profile_name, pdf_path,
+                indeed_log, company, title,
+            )
+            watchdog.ping()
+            console.print(f"  Indeed mode: [cyan]{mode}[/cyan]")
+
+            if mode == "company_site":
+                active_page = context.pages[-1]
+                platform    = detect_platform(active_page.url)
+                row["platform"] = platform
+                console.print(f"  New tab: [cyan]{platform}[/cyan]")
+
+            elif mode == "easy_apply":
+                return _finish_job(
+                    active_page, row, profile, profile_name, pdf_path,
+                    indeed_log, "indeed", applied_urls, stats, watchdog,
+                    score, fit, keywords, dry_run, review,
+                )
+
+    # ── 5. JD + resume selection (non-Indeed or Indeed fallthrough) ──────────
+    if not pdf_path:
+        jd_text = extract_job_description(active_page, platform)
+        console.print(f"  JD: {len(jd_text)} chars")
+        pdf_path, score, fit, keywords, fname = pick_resume_with_details(
+            title, notes, profile_name, company, jd_text,
+        )
+        _print_resume_selection(title, company, fname, score, fit, keywords)
+
+        # Score gate
+        if min_score > 0 and score < min_score and fit == "Low Fit":
+            print_status("SKIPPED", f"score {score:.3f} < {min_score} (Low Fit)")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_low_fit", pdf_path,
+                score, fit, keywords, notes=f"score {score:.3f}"))
+            applied_urls.add(norm_url)
+            return "continue"
+    else:
+        score, fit, keywords = (
+            float(row.get("_score", 0.0)),
+            row.get("_fit", "Low Fit"),
+            row.get("_keywords", []),
+        )
+
+    watchdog.ping()
+
+    # ── 6. Review mode prompt ─────────────────────────────────────────────────
+    if review:
+        sal_parsed, sal_label = parse_salary_label(notes, profile_name)
+        console.print(Panel(
+            f"[bold]Company:[/bold]   {company}\n"
+            f"[bold]Title:[/bold]     {title}\n"
+            f"[bold]Platform:[/bold]  {platform}\n"
+            f"[bold]Salary:[/bold]    {sal_parsed} ({sal_label})\n"
+            f"[bold]Resume:[/bold]    {Path(pdf_path).name}\n"
+            f"[bold]Score:[/bold]     {score:.2f} — {fit}\n"
+            f"[bold]Keywords:[/bold]  {', '.join(keywords[:5])}\n"
+            f"[bold]URL:[/bold]       {url[:80]}",
+            title="[bold cyan]Review Job[/bold cyan]",
+        ))
+        while True:
+            ans = input("  Apply? (y/n/q): ").strip().lower()
+            if ans in ("y", "n", "q"):
+                break
+        watchdog.ping()
+        if ans == "q":
+            return "stop"
+        if ans == "n":
+            print_status("SKIPPED", "manual skip")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_manual", pdf_path,
+                score, fit, keywords))
+            applied_urls.add(norm_url)
+            return "continue"
+
+    # ── 7. Dry-run ────────────────────────────────────────────────────────────
+    if dry_run:
+        print_status("DRY_RUN", f"{Path(pdf_path).name} | {score:.2f} | {fit}")
+        log_result(profile_name, _make_entry(
+            profile_name, row, "dry_run", pdf_path, score, fit, keywords))
+        stats.record(company, title, score, fit, "dry_run")
+        applied_urls.add(norm_url)
+        return "continue"
+
+    # ── 8. reCAPTCHA check ────────────────────────────────────────────────────
+    if detect_recaptcha(active_page):
+        print(f"\n  reCAPTCHA detected at {company} - {title}. "
+              f"Solve in browser, press Enter to continue.")
+        input("  > ")
+        watchdog.ping()
+        stats.captcha += 1
+
+    if watchdog.timed_out:
+        print_status("STUCK", f"watchdog before fill ({watchdog.elapsed():.0f}s)")
+        scr = take_screenshot(active_page, company, title, "watchdog")
+        log_result(profile_name, _make_entry(
+            profile_name, row, "watchdog_timeout", pdf_path, score, fit,
+            keywords, screenshot=scr))
+        applied_urls.add(norm_url)
+        return "continue"
+
+    # ── 9. Fill form ──────────────────────────────────────────────────────────
+    console.print("  Filling form...")
+    try:
+        field_log = fill_form(
+            active_page, platform, profile, profile_name,
+            pdf_path, company, title,
+        )
+        watchdog.ping()
+    except Exception as e:
+        print_status("ERROR", str(e))
+        scr = take_screenshot(active_page, company, title, "error")
+        log_result(profile_name, _make_entry(
+            profile_name, row, "error", pdf_path, score, fit,
+            keywords, screenshot=scr, notes=str(e)))
+        stats.errors += 1
+        applied_urls.add(norm_url)
+        return "continue"
+
+    return _finish_job(
+        active_page, row, profile, profile_name, pdf_path, field_log,
+        platform, applied_urls, stats, watchdog,
+        score, fit, keywords, dry_run, review,
+    )
+
+
+def _print_resume_selection(title: str, company: str, fname: str,
+                             score: float, fit: str, keywords: list):
+    console.print(
+        f"\n  [bold][SELECTED_RESUME][/bold]\n"
+        f"  Job:      {title} — {company}\n"
+        f"  Resume:   [cyan]{fname}[/cyan]\n"
+        f"  Score:    {score:.2f}  |  Fit: [{'green' if 'Strong' in fit or 'Good' in fit else 'yellow'}]{fit}[/{'green' if 'Strong' in fit or 'Good' in fit else 'yellow'}]\n"
+        f"  Keywords: {', '.join(keywords[:6]) or 'n/a'}"
+    )
+
+
+def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
+                pdf_path: str, field_log: list, platform: str,
+                applied_urls: set, stats: SessionStats, watchdog: Watchdog,
+                score: float, fit: str, keywords: list,
+                dry_run: bool, review: bool) -> str:
+    """Shared end-of-job: field summary → submit → confirmation → log."""
+    url      = str(row.get("url", ""))
+    norm_url = normalize_url(url)
+    company  = str(row.get("company", ""))
+    title    = str(row.get("title", ""))
+
+    print_field_summary(field_log)
+    filled_count  = sum(1 for x in field_log if x["status"] == "filled")
+    skipped_count = sum(1 for x in field_log if x["status"] == "skipped")
+
+    scr_filled = take_screenshot(active_page, company, title, "filled")
+
+    console.print(
+        Panel(
+            f"[bold]Company:[/bold]  {company}\n"
+            f"[bold]Title:[/bold]    {title}\n"
+            f"[bold]Resume:[/bold]   {Path(pdf_path).name}  (score: {score:.2f}, {fit})\n"
+            f"[bold]Platform:[/bold] {platform}\n"
+            f"[bold]Fields:[/bold]   {filled_count} filled, {skipped_count} skipped\n\n"
+            "[yellow]Review the form. Make corrections before answering.[/yellow]",
+            title="[bold green]Form Filled — Ready[/bold green]",
+        )
+    )
+
+    if dry_run:
+        print_status("DRY_RUN", "would submit here")
+        log_result(profile_name, _make_entry(
+            profile_name, row, "dry_run", pdf_path, score, fit,
+            keywords, screenshot=scr_filled,
+            notes=f"{filled_count} filled, {skipped_count} skipped"))
+        stats.record(company, title, score, fit, "dry_run")
+        applied_urls.add(norm_url)
+        return "continue"
+
+    # Review mode or non-review auto-submit
+    if review:
+        while True:
+            ans = input("  Submit? (y/n/q): ").strip().lower()
+            if ans in ("y", "n", "q"):
+                break
+        watchdog.ping()
+        if ans == "q":
+            return "stop"
+        if ans == "n":
+            print_status("SKIPPED", "manual skip")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_manual", pdf_path, score, fit, keywords,
+                screenshot=scr_filled))
+            applied_urls.add(norm_url)
+            return "continue"
+    else:
+        # Non-review: still show the form, ask once
+        while True:
+            ans = input("  Submit? (y / n / s=stop all): ").strip().lower()
+            if ans in ("y", "n", "s"):
+                break
+        watchdog.ping()
+        if ans == "s":
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_manual", pdf_path, score, fit,
+                keywords, screenshot=scr_filled, notes="user stopped"))
+            return "stop"
+        if ans == "n":
+            print_status("SKIPPED", "manual skip")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_manual", pdf_path, score, fit,
+                keywords, screenshot=scr_filled))
+            applied_urls.add(norm_url)
+            return "continue"
+
+    # ── Submit ────────────────────────────────────────────────────────────────
+    if detect_recaptcha(active_page):
+        print(f"\n  reCAPTCHA before submit at {company} - {title}. "
+              "Solve in browser, press Enter.")
+        input("  > ")
+        watchdog.ping()
+        stats.captcha += 1
+
+    baseline_url = active_page.url
+    btn_found    = click_submit(active_page, platform)
+
+    if not btn_found:
+        console.print("  [yellow]Submit button not found — submit manually.[/yellow]")
+        input("  Press Enter when done...")
+        scr = take_screenshot(active_page, company, title, "manual")
+        print_status("SUBMITTED", "manual")
+        log_result(profile_name, _make_entry(
+            profile_name, row, "submitted_manually", pdf_path, score, fit,
+            keywords, screenshot=scr,
+            notes=f"{filled_count} filled, {skipped_count} skipped"))
+        stats.record(company, title, score, fit, "submitted_manually")
+        applied_urls.add(norm_url)
+        return "continue"
+
+    # ── Confirmation check (max 10s) ──────────────────────────────────────────
+    conf_status, conf_detail = wait_for_submission_confirmation(
+        active_page, baseline_url, timeout_s=10,
+    )
+
+    if conf_status in ("confirmed", "url_changed"):
+        scr = take_screenshot(active_page, company, title, "submitted")
+        print_status("SUBMITTED", conf_detail)
+        log_result(profile_name, _make_entry(
+            profile_name, row, "submitted", pdf_path, score, fit,
+            keywords, screenshot=scr,
+            notes=f"{filled_count} filled | {conf_detail}"))
+        stats.record(company, title, score, fit, "submitted")
+
+    else:  # stuck
+        scr = take_screenshot(active_page, company, title, "stuck")
+        print_status("STUCK", f"no confirmation after 10s — marking submit_failed")
+        log_result(profile_name, _make_entry(
+            profile_name, row, "submit_failed", pdf_path, score, fit,
+            keywords, screenshot=scr, notes=conf_detail))
+        stats.record(company, title, score, fit, "submit_failed")
+
+    applied_urls.add(norm_url)
+    return "continue"
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Job Application Bot")
-    parser.add_argument("--profile",   default="muhammad")
+    parser.add_argument("--profile",   default="muhammad",
+                        help="Profile to use: muhammad or razia")
     parser.add_argument("--start-id",  type=int, default=1)
     parser.add_argument("--job-id",    type=int, default=None)
     parser.add_argument("--discover",  action="store_true",
-                        help="Auto-discover new jobs on LinkedIn after CSV is exhausted")
+                        help="Auto-discover jobs from resume text after CSV exhausted")
+    parser.add_argument("--review",    action="store_true",
+                        help="Show each job and ask y/n/q before submitting")
+    parser.add_argument("--limit",     type=int, default=50,
+                        help="Max jobs per session (default: 50)")
+    parser.add_argument("--dry-run",   action="store_true",
+                        help="Score + log everything but never submit")
+    parser.add_argument("--min-score", type=float, default=0.05,
+                        help="Skip if score < this AND Low Fit (0.0 disables)")
     args = parser.parse_args()
 
     profile_name = args.profile.lower()
@@ -449,10 +733,20 @@ def main():
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Startup info ─────────────────────────────────────────────────────────
+    # ── Startup ───────────────────────────────────────────────────────────────
     console.rule("[bold]Job Application Bot[/bold]")
-    console.print(f"  Profile: [cyan]{profile['full_name']}[/cyan]")
+    mode_flags = " ".join(filter(None, [
+        "DISCOVER" if args.discover else "",
+        "REVIEW"   if args.review   else "",
+        "DRY-RUN"  if args.dry_run  else "",
+        f"LIMIT={args.limit}",
+        f"MIN-SCORE={args.min_score}",
+    ]))
+    console.print(f"  Profile: [cyan]{profile['full_name']}[/cyan]  |  {mode_flags}")
     print_startup_verification(profile_name)
+
+    if args.dry_run:
+        console.print("  [cyan][DRY-RUN] Nothing will be submitted.[/cyan]")
 
     # ── Load jobs ─────────────────────────────────────────────────────────────
     df = pd.read_csv(jobs_csv)
@@ -462,42 +756,27 @@ def main():
     else:
         df = df[df["id"] >= args.start_id]
 
-    if df.empty:
-        console.print("[yellow]No jobs to process.[/yellow]")
-        return
-
     applied_urls = load_applied_urls(profile_name)
-    if applied_urls:
-        console.print(f"  Applied URLs loaded: [dim]{len(applied_urls)}[/dim]")
+    stats        = SessionStats()
 
     # ── Preview table ─────────────────────────────────────────────────────────
     t = Table(title=f"Jobs — {profile['full_name']}", show_lines=True)
-    t.add_column("ID",      style="cyan")
-    t.add_column("Company")
-    t.add_column("Title")
-    t.add_column("Resume",  style="green")
-    t.add_column("Status",  style="yellow")
-    t.add_column("Notes")
+    t.add_column("ID",   style="cyan"); t.add_column("Company"); t.add_column("Title")
+    t.add_column("Status", style="yellow"); t.add_column("Notes")
+    job_count = 0
     for _, row in df.iterrows():
-        url   = str(row.get("url",     "")).strip()
-        notes = str(row.get("notes",   ""))
-        title = str(row.get("title",   ""))
-        comp  = str(row.get("company", ""))
-        try:
-            pdf = pick_resume(title, notes, profile_name, comp)
-            pdf_name = Path(pdf).name
-        except Exception:
-            pdf_name = "?"
-        skip, _ = check_salary_gate(profile, notes)
+        if job_count >= args.limit:
+            break
+        url = normalize_url(str(row.get("url", "")).strip())
         if url in applied_urls:
             row_status = "[dim]done[/dim]"
-        elif skip:
-            row_status = "[yellow]salary gate[/yellow]"
         else:
             row_status = "[green]queued[/green]"
-        t.add_row(str(row.get("id","")), comp, title, pdf_name, row_status, notes)
+            job_count += 1
+        t.add_row(str(row.get("id","")), str(row.get("company","")),
+                  str(row.get("title","")), row_status, str(row.get("notes","")))
     console.print(t)
-    console.print()
+    console.print(f"  {job_count} jobs queued (limit: {args.limit})\n")
 
     confirm = input("Start? (y/N): ").strip().lower()
     if confirm != "y":
@@ -505,7 +784,6 @@ def main():
         return
 
     console.print(f"\n[bold]Launching browser for {profile['full_name']}...[/bold]")
-
     browser_dir = BROWSER_PROF / profile_name
     browser_dir.mkdir(parents=True, exist_ok=True)
 
@@ -521,54 +799,65 @@ def main():
         except Exception:
             pass
 
-        page = context.new_page()
+        page         = context.new_page()
         user_stopped = False
+        jobs_run     = 0
 
         try:
-            # ── Phase 1: Process jobs from CSV ────────────────────────────────
+            # ── Phase 1: CSV jobs ─────────────────────────────────────────────
             for _, row in df.iterrows():
+                if jobs_run >= args.limit:
+                    console.print(f"\n[yellow]Reached session limit ({args.limit}).[/yellow]")
+                    break
+                norm = normalize_url(str(row.get("url", "")))
+                if norm in applied_urls:
+                    stats.duplicates += 1
+                    continue
+                stats.discovered += 1
                 result = process_job(
                     page, context, row.to_dict(), int(row.get("id", 0)),
-                    profile, profile_name, applied_urls,
+                    profile, profile_name, applied_urls, stats,
+                    dry_run=args.dry_run, review=args.review,
+                    min_score=args.min_score,
                 )
+                jobs_run += 1
                 if result == "stop":
                     user_stopped = True
-                    console.print("\n[yellow]Loop stopped by user.[/yellow]")
+                    console.print("\n[yellow]Stopped by user.[/yellow]")
                     break
                 console.print()
-                delay = random.uniform(3, 5)
-                console.print(f"  Waiting {delay:.1f}s...")
-                time.sleep(delay)
+                time.sleep(random.uniform(3, 5))
 
-            # ── Phase 2: Auto-discover new jobs (if --discover and not stopped) ─
+            # ── Phase 2: Discovery ────────────────────────────────────────────
             if not user_stopped and args.discover:
                 console.print("\n[bold cyan]Starting autonomous job discovery...[/bold cyan]")
-                while True:
-                    new_job_dicts = discover_jobs(
+                while jobs_run < args.limit:
+                    new_jobs = discover_jobs(
                         page, context, profile_name, applied_urls, max_per_search=20,
                     )
-                    if not new_job_dicts:
-                        console.print("  No new jobs found. Discovery complete.")
+                    if not new_jobs:
+                        console.print("  No new jobs found.")
                         break
-
-                    added = append_to_jobs_csv(new_job_dicts)
+                    added = append_to_jobs_csv(new_jobs)
                     if not added:
-                        console.print("  All discovered jobs already in jobs.csv.")
                         break
-
+                    stats.discovered += len(added)
                     for job_row in added:
+                        if jobs_run >= args.limit:
+                            break
                         result = process_job(
                             page, context, job_row, job_row["id"],
-                            profile, profile_name, applied_urls,
+                            profile, profile_name, applied_urls, stats,
+                            dry_run=args.dry_run, review=args.review,
+                            min_score=args.min_score,
                         )
+                        jobs_run += 1
                         if result == "stop":
                             user_stopped = True
                             break
                         console.print()
                         time.sleep(random.uniform(3, 5))
-
                     if user_stopped:
-                        console.print("\n[yellow]Discovery stopped by user.[/yellow]")
                         break
 
         except KeyboardInterrupt:
@@ -577,10 +866,9 @@ def main():
             input("\nPress Enter to close browser...")
             context.close()
 
-    console.print(
-        f"\n[bold green]Done.[/bold green]  "
-        f"Results: {OUTPUT_DIR / f'results_{profile_name}.csv'}"
-    )
+    stats.print_summary()
+    console.print(f"\n[bold green]Done.[/bold green]  "
+                  f"Results: {OUTPUT_DIR / f'results_{profile_name}.csv'}")
 
 
 if __name__ == "__main__":

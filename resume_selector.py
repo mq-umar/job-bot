@@ -18,10 +18,20 @@ try:
     from pypdf import PdfReader
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
     _TFIDF_OK = True
 except ImportError:
     _TFIDF_OK = False
     print("  [resume_selector] scikit-learn/pypdf not installed — using keyword fallback")
+
+# ── Fit labels ─────────────────────────────────────────────────────────────────
+
+def fit_label(score: float) -> str:
+    if score >= 0.65: return "Strong Fit"
+    if score >= 0.45: return "Good Fit"
+    if score >= 0.30: return "Possible Fit"
+    if score >= 0.15: return "Stretch"
+    return "Low Fit"
 
 BASE_DIR = Path(__file__).parent
 
@@ -246,6 +256,53 @@ def pick_resume(title: str, notes: str = "", profile: str = "muhammad",
 
 # Keep old call signature for any code still using positional args
 pick_best_resume = pick_resume
+
+
+def get_matched_keywords(jd_text: str, resume_path: str, n: int = 6) -> list[str]:
+    """
+    Return the top-n TF-IDF feature tokens shared between JD and resume.
+    Used for cover letter generation and logging.
+    """
+    if not _TFIDF_OK or not jd_text:
+        return []
+    try:
+        resume_text = _pdf_text(resume_path)
+        vec    = TfidfVectorizer(ngram_range=(1, 2), stop_words="english",
+                                 max_features=5000, sublinear_tf=True)
+        matrix = vec.fit_transform([_clean(jd_text), _clean(resume_text)])
+        names  = vec.get_feature_names_out()
+        # Element-wise product = terms that score high in BOTH documents
+        overlap = np.asarray(matrix[0].todense()).flatten() * \
+                  np.asarray(matrix[1].todense()).flatten()
+        top_idx = overlap.argsort()[::-1][:n]
+        return [names[i] for i in top_idx if overlap[i] > 0]
+    except Exception:
+        return []
+
+
+def pick_resume_with_details(title: str, notes: str = "", profile: str = "muhammad",
+                              company: str = "", jd_text: str = "",
+                              exclude=None) -> tuple:
+    """
+    Returns (pdf_path, score, fit_label_str, matched_keywords, filename).
+    All-in-one call for main.py — never crashes.
+    """
+    exclude = exclude or set()
+    path    = pick_resume(title, notes, profile, company, jd_text, exclude)
+    fname   = Path(path).name
+
+    # Score only the chosen resume against the JD
+    if jd_text and _TFIDF_OK:
+        try:
+            ranked  = score_resumes(f"{title} {company} {notes} {jd_text}", profile)
+            score   = next((s for n, s in ranked if n == fname), 0.0)
+        except Exception:
+            score = 0.0
+    else:
+        score = 0.0
+
+    keywords = get_matched_keywords(jd_text, path) if jd_text else []
+    return path, score, fit_label(score), keywords, fname
 
 
 def _find(folder: Path, filename: str, exclude: set):

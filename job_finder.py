@@ -318,12 +318,6 @@ def discover_jobs(page, context, profile_name: str, applied_urls: set,
         else:
             batch = _scrape_google_jobs(page, url, existing, max_per_search)
 
-        # Salary filter
-        before = len(batch)
-        batch  = [j for j in batch if _salary_ok(j.get("notes", ""), profile_name)]
-        if before - len(batch):
-            print(f"    Filtered {before - len(batch)} below-salary-minimum jobs")
-
         found.extend(batch)
         if batch:
             print(f"    + {len(batch)} new jobs")
