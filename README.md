@@ -2,9 +2,40 @@
 
 Playwright-based job application automation for two profiles: **muhammad** and **razia**.
 
+Runs as a **desktop app** (FastAPI backend + React UI) or as a plain CLI.
+
 ---
 
-## Quick start
+## Desktop app — quick start
+
+```bash
+# 1. Create Python venv and install dependencies
+python3 -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+playwright install chromium
+
+# 2. Build the UI (requires Node 18+)
+cd ui && npm install && npm run build && cd ..
+
+# 3. Launch — opens browser automatically at http://localhost:8099
+python3 launch.py
+```
+
+**Dev mode** (hot-reload UI + live API):
+```bash
+python3 launch.py --dev           # starts Vite on :5173, API on :8099
+cd ui && npm run dev              # in a second terminal
+```
+
+**Build a standalone executable** (no Python needed):
+```bash
+python3 build_app.py              # outputs dist/JobBot (macOS/Linux) or dist/JobBot.exe
+```
+
+---
+
+## CLI-only quick start
 
 ```bash
 pip install -r requirements.txt
@@ -225,12 +256,26 @@ Printed at the end of every run:
 
 ```
 job-bot/
-├── main.py                  # Orchestrator + CLI
+├── main.py                  # CLI orchestrator
 ├── form_filler.py           # Field detection, form filling, resume replacement
 ├── resume_selector.py       # TF-IDF resume scoring + selection
 ├── job_finder.py            # Tiered job discovery (4 tiers)
-├── jobs.csv                 # Manual job queue (add rows here)
+├── jobs.csv                 # Manual job queue
+├── launch.py                # Desktop app entry point
+├── build_app.py             # PyInstaller packager
 ├── requirements.txt
+├── api/                     # FastAPI backend
+│   ├── main.py              # App factory + CORS + static serving
+│   ├── bot_runner.py        # Background thread wrapper + WebSocket events
+│   ├── security.py          # Per-process token + Fernet encryption
+│   ├── websocket.py         # /ws/logs WebSocket endpoint
+│   └── routers/             # bot, jobs, resumes, profiles, settings
+├── ui/                      # React + Vite + Tailwind frontend
+│   ├── src/
+│   │   ├── pages/           # Dashboard, Queue, History, Resumes, Analytics,
+│   │   │                    #   InterviewTracker, Profiles, Settings
+│   │   └── components/      # Layout, Onboarding, StartModal, StatusBadge
+│   └── dist/                # Built static files (served by FastAPI)
 ├── config/
 │   ├── muhammad_profile.json
 │   └── razia_profile.json
