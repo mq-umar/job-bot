@@ -12,6 +12,7 @@ from typing import Optional
 # ── Skills lookup (resume filename → 2-3 relevant skills phrase) ──────────────
 
 SKILLS_BY_RESUME = {
+    # Cluster resumes
     "C1_M365_Azure_Intune_Admin.pdf":      "Microsoft 365, Entra ID SSO/MFA, and Intune MDM administration",
     "C2_Systems_Administrator.pdf":         "systems administration, Microsoft 365, and PowerShell automation",
     "C3_MSP_Managed_Services.pdf":          "managed IT services, help desk escalation, and endpoint deployment",
@@ -22,6 +23,38 @@ SKILLS_BY_RESUME = {
     "C8_IAM_Identity_Engineer.pdf":         "Entra ID identity governance, SSO/MFA, and SCIM automated provisioning",
     "C9_IT_Manager_Director.pdf":           "IT strategy, full-stack infrastructure ownership, and executive partnership",
     "C10_DevOps_Cloud_Automation.pdf":      "serverless infrastructure, Python/PowerShell automation, and API pipeline design",
+    # JD-specific numbered resumes
+    "01_IBM_AI_First_Strategy_Consultant.pdf":          "AI strategy consulting, digital transformation, and enterprise innovation",
+    "02_IBM_Associate_Data_Scientist_2026.pdf":         "machine learning, Python data science, and predictive analytics",
+    "03_IBM_Application_Developer_Azure_Cloud.pdf":     "Azure cloud migration, application development, and cloud-native architecture",
+    "04_IBM_Software_Engineer_Apprentice_A.pdf":        "software engineering, Python development, and cloud API integration",
+    "05_IBM_Software_Engineer_Apprentice_B.pdf":        "software engineering, backend development, and IBM platform integration",
+    "06_IBM_AI_Software_Developer.pdf":                 "AI software development, Watsonx LLM integration, and intelligent automation",
+    "07_IBM_System_Support_Tech_Apprentice.pdf":        "IT systems support, hardware troubleshooting, and technical operations",
+    "08_IBM_Backend_Developer_Intern_2026.pdf":         "backend API development, REST services, and cloud platform integration",
+    "09_Dev10_Entry_Level_Data_Engineer.pdf":           "data engineering, ETL pipeline design, and Snowflake/Airflow workflows",
+    "10_StepStone_Junior_Analyst_RFP_AI.pdf":           "AI-assisted content analysis, RFP management, and Power Automate workflows",
+    "11_Imprint_Software_Engineer.pdf":                 "Go/Python microservices, fintech API integration, and DynamoDB data modeling",
+    "12_IT_Project_Manager.pdf":                        "IT project delivery, Agile/Scrum facilitation, and JIRA sprint management",
+    "13_Tinder_Product_Analyst.pdf":                    "product analytics, A/B experimentation, and funnel optimization with SQL/Tableau",
+    "14_FlexTrade_Software_Developer_Cpp.pdf":          "C++ trading system development, EMS/OEMS integration, and Qt UI",
+    "15_HomeServe_DevOps_Engineer.pdf":                 "AWS DevOps, GitHub Actions CI/CD, and CloudFormation infrastructure-as-code",
+    "16_Intuit_Software_Engineer_1.pdf":                "full-stack development, React/Spring Boot, and scalable web application design",
+    "17_FullStack_Backend_Engineer.pdf":                "Python/FastAPI backend engineering, REST API design, and cloud-native deployment",
+    "18_Deloitte_Forward_Deployed_Engineer.pdf":        "GenAI consulting, Azure AI Foundry RAG pipelines, and LLMOps at scale",
+    "19_Honeywell_Software_Engineer_Recent_Grad.pdf":   "software engineering fundamentals, Python scripting, and system integration",
+    "20_BrandRankAI_Frontend_Software_Engineer.pdf":    "Deno/Fresh frontend engineering, data-rich dashboard development, and Core Web Vitals",
+    # IT-specific job resumes
+    "Resume_InStride_Updated.pdf":                      "IT support, Microsoft 365 administration, and endpoint lifecycle management",
+    "Job_PASONA_IT_Infrastructure_Engineer.pdf":        "IT infrastructure engineering, Microsoft 365, and cloud platform administration",
+    "Job_IT_Service_Engineer.pdf":                      "IT service management, systems administration, and infrastructure support",
+    "Job_Skopein_IT_Support_Engineer_L2.pdf":           "Level II IT support, network troubleshooting, and endpoint deployment",
+    "Job_Google_CES_AI_Integration.pdf":                "GCP AI integration, Contact Center AI, and Node.js API development",
+    "Job_AI_Product_Engineer.pdf":                      "AI product engineering, Claude/LLM integration, and rapid prototyping",
+    "Resume_BackEnd_Developer.pdf":                     "Java/Spring Boot backend development, AWS Lambda, and REST API design",
+    "Resume_Data_Analyst.pdf":                          "Power BI reporting, SQL analytics, and healthcare KPI dashboards",
+    "Resume_Process_Automation_Engineer_FINAL.pdf":     "process automation, Power BI, and continuous improvement engineering",
+    # Razia resumes
     "RC1_Vulnerability_Management.pdf":     "vulnerability assessment, patch lifecycle management, and compliance reporting",
     "RC2_Endpoint_Security_Intune.pdf":     "Intune MDM, endpoint security policy enforcement, and compliance management",
     "RC3_macOS_Apple_MDM.pdf":              "macOS fleet management, Apple MDM, and endpoint security configuration",
@@ -227,19 +260,21 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
         return p.get("first_name")
     if any(x in label_lower for x in ["last name", "surname", "family name", "lastname"]):
         return p.get("last_name")
-    if any(x in label_lower for x in ["full name", "your name"]):
+    if any(x in label_lower for x in ["full name", "your name", "legal name"]):
+        return p.get("full_name", f"{p.get('first_name','')} {p.get('last_name','')}")
+    if label_lower.strip() == "name":
         return p.get("full_name", f"{p.get('first_name','')} {p.get('last_name','')}")
 
     # Contact
     if "email" in label_lower:
         return p.get("email")
-    if any(x in label_lower for x in ["phone", "telephone", "mobile"]):
+    if any(x in label_lower for x in ["phone", "telephone", "mobile", "cell"]):
         return p.get("phone_formatted")
     if "linkedin" in label_lower:
         return p.get("linkedin", "")
     if "github" in label_lower:
         return p.get("github", "")
-    if any(x in label_lower for x in ["website", "portfolio", "personal url"]):
+    if any(x in label_lower for x in ["website", "portfolio", "personal url", "personal site"]):
         return p.get("github", p.get("linkedin", ""))
 
     # Location
@@ -247,11 +282,13 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
         return p.get("city")
     if "state" in label_lower and "united states" not in label_lower:
         return p.get("state")
-    if any(x in label_lower for x in ["zip", "postal code"]):
+    if any(x in label_lower for x in ["zip", "postal code", "postal"]):
         return p.get("zip")
     if "country" in label_lower:
         return p.get("country")
-    if any(x in label_lower for x in ["location", "city, state", "city/state"]):
+    if any(x in label_lower for x in ["location", "city, state", "city/state",
+                                       "current location", "where are you located",
+                                       "where do you live", "city and state"]):
         return f"{p.get('city','')}, {p.get('state','')}"
     if any(x in label_lower for x in ["street", "address"]):
         return f"{p.get('city','')}, {p.get('state','')} {p.get('zip','')}"
@@ -261,24 +298,44 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
         return edu.get("school", "")
     if "degree" in label_lower:
         return edu.get("degree", "")
-    if any(x in label_lower for x in ["major", "field of study", "program of study"]):
+    if any(x in label_lower for x in ["major", "field of study", "program of study", "concentration"]):
         return edu.get("major", "")
     if "gpa" in label_lower:
         return edu.get("gpa", "")
-    if any(x in label_lower for x in ["graduation", "grad date", "graduation year", "expected graduation"]):
+    if any(x in label_lower for x in ["graduation", "grad date", "graduation year",
+                                       "expected graduation", "graduation month"]):
         return edu.get("graduation", "")
 
     # Work auth & sponsorship
-    if any(x in label_lower for x in ["sponsorship", "require visa", "visa sponsorship", "will you require"]):
+    if any(x in label_lower for x in ["sponsorship", "require visa", "visa sponsorship",
+                                       "will you require", "need sponsorship"]):
         return p.get("require_sponsorship", "No")
-    if any(x in label_lower for x in ["authorized", "authorised", "legally authorized", "work in the us", "eligible to work"]):
+    if any(x in label_lower for x in ["authorized", "authorised", "legally authorized",
+                                       "work in the us", "eligible to work",
+                                       "right to work", "legally eligible"]):
         return p.get("authorized_to_work", "Yes")
     if "citizen" in label_lower:
         return p.get("citizenship", "US Citizen")
-    if "veteran" in label_lower:
+    if "veteran" in label_lower or "military" in label_lower:
         return p.get("veteran", "No")
     if any(x in label_lower for x in ["disability", "disabled"]):
         return p.get("disability", "No")
+
+    # EEO fields
+    if any(x in label_lower for x in ["gender", "sex"]):
+        return p.get("gender", "")
+    if any(x in label_lower for x in ["race", "ethnicity", "ethnic"]):
+        return p.get("ethnicity", "")
+
+    # Referral / source
+    if any(x in label_lower for x in ["how did you hear", "how did you find", "referral",
+                                       "where did you hear", "source", "job source",
+                                       "how were you referred", "where did you learn"]):
+        return "LinkedIn"
+
+    # Salary / compensation
+    if _is_salary_label(label_lower):
+        return None  # handled by caller via _salary_value
 
     # Cover letter / open-text interest question
     if _is_cover_letter_label(label_lower):
@@ -530,6 +587,205 @@ def _fill_country(page, profile: dict, log: list):
         log.append({"field": "country", "status": "error", "note": str(e)[:80]})
 
 
+# ── Location field fill ───────────────────────────────────────────────────────
+
+def _fill_location(page, profile: dict, log: list):
+    """
+    Fill city/location fields using multiple selector strategies.
+    Handles combined "Holbrook, NY", separate city+state, and zip fields.
+    """
+    city     = profile.get("city", "Holbrook")
+    state    = profile.get("state", "NY")
+    zip_code = profile.get("zip", "11741")
+    combined = f"{city}, {state}"
+
+    # Attempt combined location field first
+    combined_selectors = [
+        "#candidate-location",
+        "#location",
+        "#current_location",
+        "input[name='location']",
+        "input[name='candidate-location']",
+        "input[placeholder*='location' i]",
+        "input[placeholder*='where' i]",
+        "input[aria-label*='location' i]",
+        "input[aria-label*='city, state' i]",
+    ]
+    for sel in combined_selectors:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click(); el.fill(combined); human_delay(0.3, 0.6)
+                # Dismiss any autocomplete
+                try:
+                    page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                log.append({"field": sel, "status": "filled", "value": combined})
+                return
+        except Exception:
+            pass
+
+    # Separate city field
+    city_filled = False
+    for sel in ["#city", "input[name='city']", "input[placeholder*='city' i]",
+                "input[aria-label*='city' i]"]:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click(); el.fill(city); human_delay(0.2, 0.4)
+                log.append({"field": "city", "status": "filled", "value": city})
+                city_filled = True
+                break
+        except Exception:
+            pass
+
+    # Separate state field
+    for sel in ["#state", "input[name='state']", "select[name='state']",
+                "select[id='state']", "input[placeholder*='state' i]"]:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                tag = el.evaluate("e => e.tagName.toUpperCase()")
+                if tag == "SELECT":
+                    if not _best_option(el, state):
+                        _best_option(el, "New York")
+                else:
+                    el.click(); el.fill(state); human_delay(0.2, 0.4)
+                log.append({"field": "state", "status": "filled", "value": state})
+                break
+        except Exception:
+            pass
+
+    # Zip field
+    for sel in ["#zip", "#zipcode", "#postal", "input[name='zip']",
+                "input[name='zipcode']", "input[placeholder*='zip' i]",
+                "input[placeholder*='postal' i]"]:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click(); el.fill(zip_code); human_delay(0.2, 0.4)
+                log.append({"field": "zip", "status": "filled", "value": zip_code})
+                break
+        except Exception:
+            pass
+
+    if not city_filled:
+        # Full address fallback
+        for sel in ["#address", "input[name='address']", "input[placeholder*='address' i]"]:
+            try:
+                el = page.query_selector(sel)
+                if el and el.is_visible():
+                    el.click(); el.fill(f"{city}, {state} {zip_code}"); human_delay(0.2, 0.4)
+                    log.append({"field": "address", "status": "filled",
+                                 "value": f"{city}, {state} {zip_code}"})
+                    break
+            except Exception:
+                pass
+
+
+# ── Indeed Easy Apply handler ─────────────────────────────────────────────────
+
+def fill_indeed_easy_apply(page, context, profile: dict, profile_name: str,
+                            resume_pdf_path: str, log: list,
+                            company: str = "", title: str = "") -> str:
+    """
+    Handle all three Indeed scenarios.
+    Returns: 'easy_apply' | 'company_site' | 'no_button'
+    Page object may change (new tab) — caller must use context.pages[-1] after.
+    """
+    human_delay(1.5, 2.5)
+    resume_name = Path(resume_pdf_path).name
+
+    # Scenario A: Easy Apply / Apply now button opens a modal
+    for btn_text in ["Apply now", "Easy Apply", "Apply Now"]:
+        try:
+            btn = page.locator(f"button:has-text('{btn_text}'), a:has-text('{btn_text}')").first
+            if btn.is_visible(timeout=2000):
+                btn.click()
+                human_delay(1.5, 2.5)
+                # Check if modal opened (Indeed Easy Apply)
+                try:
+                    page.wait_for_selector(
+                        "[aria-label='Apply to job'], .ia-BasePage, "
+                        "[data-testid='ia-view-root'], .ia-Questions",
+                        timeout=5000,
+                    )
+                    # Multi-step modal — iterate up to 20 steps
+                    for _step in range(20):
+                        if detect_recaptcha(page):
+                            print("\n  [CAPTCHA] Solve reCAPTCHA then press Enter...")
+                            input("  > ")
+
+                        # Upload resume if file input visible
+                        try:
+                            fi = page.locator("input[type='file']").first
+                            if fi.is_visible(timeout=1000):
+                                fi.set_input_files(resume_pdf_path)
+                                human_delay(1, 2)
+                                log.append({"field": "resume_upload", "status": "filled",
+                                             "value": resume_name})
+                        except Exception:
+                            pass
+
+                        _scan_and_fill(page, profile, profile_name, resume_name,
+                                       log, company, title)
+
+                        # Submit button = final step reached
+                        try:
+                            sub = page.locator(
+                                "button:has-text('Submit your application'), "
+                                "button:has-text('Submit application')"
+                            ).first
+                            if sub.is_visible(timeout=1000):
+                                return "easy_apply"
+                        except Exception:
+                            pass
+
+                        # Advance step
+                        advanced = False
+                        for next_text in ["Continue", "Next", "Review your application",
+                                          "Review", "Next: Work experience"]:
+                            try:
+                                nav = page.locator(f"button:has-text('{next_text}')").last
+                                if nav.is_visible(timeout=1000):
+                                    nav.click()
+                                    human_delay(1.5, 2.5)
+                                    advanced = True
+                                    break
+                            except Exception:
+                                pass
+                        if not advanced:
+                            break
+                    return "easy_apply"
+                except Exception:
+                    pass  # No modal — might have redirected or opened company site
+        except Exception:
+            pass
+
+    # Scenario B: Apply on company site → opens new tab
+    for sel_text in ["Apply on company site", "Apply on Company Site"]:
+        try:
+            btn = page.locator(
+                f"button:has-text('{sel_text}'), a:has-text('{sel_text}')"
+            ).first
+            if btn.is_visible(timeout=2000):
+                pages_before = len(context.pages)
+                btn.click()
+                human_delay(2, 3)
+                if len(context.pages) > pages_before:
+                    new_page = context.pages[-1]
+                    new_page.wait_for_load_state("domcontentloaded", timeout=30000)
+                    human_delay(1.5, 2.5)
+                    log.append({"field": "indeed_apply_mode", "status": "filled",
+                                 "value": "company_site → new tab"})
+                    return "company_site"
+        except Exception:
+            pass
+
+    return "no_button"
+
+
 # ── Submit helpers ────────────────────────────────────────────────────────────
 
 def find_submit_button(page, platform: str):
@@ -553,25 +809,69 @@ def find_submit_button(page, platform: str):
     return None
 
 
+CONFIRMATION_KEYWORDS = [
+    "thank you", "application submitted", "successfully submitted",
+    "received your application", "application received",
+    "we'll be in touch", "we will be in touch", "application complete",
+    "you've applied", "you have applied", "application sent",
+    "your application has been", "successfully applied",
+    "application confirmed", "we received your",
+]
+
+
 def click_submit(page, platform: str) -> bool:
-    """Click the submit button and wait for the response page."""
+    """Click the submit button. Returns True if button was found and clicked."""
     btn = find_submit_button(page, platform)
     if not btn:
-        print("  [WARN] Submit button not found.")
         return False
     try:
         btn.scroll_into_view_if_needed()
         human_delay(0.5, 1.0)
         btn.click()
-        try:
-            page.wait_for_load_state("networkidle", timeout=20000)
-        except Exception:
-            pass
-        human_delay(2, 3)
+        human_delay(1.0, 1.5)  # short wait — caller does confirmation check
         return True
     except Exception as e:
-        print(f"  [ERROR] Submit failed: {e}")
+        print(f"  [ERROR] Submit click failed: {e}")
         return False
+
+
+def wait_for_submission_confirmation(page, baseline_url: str,
+                                     timeout_s: int = 10) -> tuple[str, str]:
+    """
+    Poll up to timeout_s seconds for evidence of a successful submission.
+
+    Returns (status, detail) where status is one of:
+      'confirmed'   — URL changed AND/OR confirmation keyword found
+      'url_changed' — URL changed but no keyword (probably still submitted)
+      'stuck'       — no change after timeout (form still visible)
+    """
+    import time as _time
+    deadline = _time.time() + timeout_s
+    base     = baseline_url.rstrip("/")
+
+    while _time.time() < deadline:
+        try:
+            current = page.url.rstrip("/")
+            try:
+                body = page.inner_text("body").lower()[:3000]
+            except Exception:
+                body = ""
+
+            url_changed   = current != base
+            kw_found      = any(kw in body for kw in CONFIRMATION_KEYWORDS)
+
+            if url_changed and kw_found:
+                return "confirmed", "URL changed + confirmation keyword"
+            if kw_found:
+                kw = next(kw for kw in CONFIRMATION_KEYWORDS if kw in body)
+                return "confirmed", f"keyword: '{kw}'"
+            if url_changed:
+                return "url_changed", f"→ {current[:80]}"
+        except Exception:
+            pass
+        _time.sleep(0.5)
+
+    return "stuck", "no confirmation after 10s"
 
 
 # ── Greenhouse full fill ──────────────────────────────────────────────────────
@@ -606,6 +906,12 @@ def _fill_greenhouse(page, profile: dict, profile_name: str,
     # Country autocomplete
     _fill_country(page, profile, log)
     filled_ids.add("country")
+
+    # Location field (city/state/zip or combined)
+    _fill_location(page, profile, log)
+    for loc_id in ("city", "location", "candidate-location", "address",
+                   "current_location", "zip", "zipcode", "postal", "state"):
+        filled_ids.add(loc_id)
 
     # Resume upload
     _upload_resume(page, resume_pdf_path, log)
@@ -699,6 +1005,7 @@ def _fill_generic(page, profile: dict, profile_name: str,
                   company: str = "", title: str = ""):
     human_delay(1, 2)
     resume_name = Path(resume_pdf_path).name
+    _fill_location(page, profile, log)
     _upload_resume(page, resume_pdf_path, log)
     _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
 
@@ -706,7 +1013,8 @@ def _fill_generic(page, profile: dict, profile_name: str,
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def fill_form(page, platform: str, profile: dict, profile_name: str,
-              resume_pdf_path: str, company: str = "", title: str = "") -> list:
+              resume_pdf_path: str, company: str = "", title: str = "",
+              context=None) -> list:
     """
     Fill the application form for the detected platform.
     Returns a list of log dicts: {field, status, value?, note?}

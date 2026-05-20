@@ -1,7 +1,10 @@
 browser_profile/
-output/screenshots/
-output/resumes/
+output/
+resumes/
 venv/
+.venv/
 __pycache__/
 *.pyc
 .DS_Store
+.env
+results_*.csv

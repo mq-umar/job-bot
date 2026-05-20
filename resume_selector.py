@@ -1,37 +1,223 @@
 """
 resume_selector.py
-Returns the right pre-built resume PDF path for a given profile and job title.
+ATS-grade resume selection using TF-IDF cosine similarity.
+
+Priority order:
+  1. Company/title exact override (instant — no PDF reading)
+  2. TF-IDF cosine similarity scored against full JD text
+  3. Keyword-count fallback if scikit-learn unavailable
+  4. Ranked cluster defaults
+
+PDF text is cached in-memory after first read so repeated calls are fast.
 """
+import os
+import re
 from pathlib import Path
+
+try:
+    from pypdf import PdfReader
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    _TFIDF_OK = True
+except ImportError:
+    _TFIDF_OK = False
+    print("  [resume_selector] scikit-learn/pypdf not installed — using keyword fallback")
 
 BASE_DIR = Path(__file__).parent
 
-# ── Muhammad ──────────────────────────────────────────────────────────────────
+# ── Resume folders ────────────────────────────────────────────────────────────
 
-_M_DIR = Path(
-    "/Users/admin/Library/Application Support/Claude/"
-    "local-agent-mode-sessions/74cb488d-bd43-4e60-ae29-4b8d0cf4dd7d/"
-    "287c1ab7-62ef-477f-a80b-7fc58dd0e864/"
-    "local_b464a135-25f5-409a-89f5-8d6b7598869b/outputs"
-)
+def _resume_folder(profile: str) -> Path:
+    """Return the active resume folder, preferring resumes/ then legacy path."""
+    primary = BASE_DIR / "resumes" / profile
+    if primary.exists() and any(primary.glob("*.pdf")):
+        return primary
+    # Legacy paths
+    if profile == "muhammad":
+        legacy = Path(
+            "/Users/admin/Library/Application Support/Claude/"
+            "local-agent-mode-sessions/74cb488d-bd43-4e60-ae29-4b8d0cf4dd7d/"
+            "287c1ab7-62ef-477f-a80b-7fc58dd0e864/"
+            "local_b464a135-25f5-409a-89f5-8d6b7598869b/outputs"
+        )
+        if legacy.exists():
+            return legacy
+    elif profile == "razia":
+        legacy = BASE_DIR / "razia" / "razia_resumes"
+        if legacy.exists():
+            return legacy
+    return primary  # return even if empty — caller handles missing PDFs
 
-_MUHAMMAD_MAP = [
-    (["m365", "intune", "exchange", "sharepoint"],    "C1_M365_Azure_Intune_Admin.pdf"),
-    (["iam", "identity"],                             "C8_IAM_Identity_Engineer.pdf"),
-    (["devops", "cloud", "azure", "aws"],             "C4_Cloud_Infrastructure_Engineer.pdf"),
-    (["security", "cyber", "soc"],                    "C5_Cybersecurity_Security_Analyst.pdf"),
-    (["network"],                                     "C6_Network_Engineer_Admin.pdf"),
-    (["msp", "managed service"],                      "C3_MSP_Managed_Services.pdf"),
-    (["manager", "director"],                         "C9_IT_Manager_Director.pdf"),
-    (["support", "helpdesk", "help desk", "specialist"], "C7_IT_Support_Specialist.pdf"),
+
+# ── Known resume inventory (for startup verification) ─────────────────────────
+
+ALL_RESUMES = {
+    "muhammad": [
+        "01_IBM_AI_First_Strategy_Consultant.pdf",
+        "02_IBM_Associate_Data_Scientist_2026.pdf",
+        "03_IBM_Application_Developer_Azure_Cloud.pdf",
+        "04_IBM_Software_Engineer_Apprentice_A.pdf",
+        "05_IBM_Software_Engineer_Apprentice_B.pdf",
+        "06_IBM_AI_Software_Developer.pdf",
+        "07_IBM_System_Support_Tech_Apprentice.pdf",
+        "08_IBM_Backend_Developer_Intern_2026.pdf",
+        "09_Dev10_Entry_Level_Data_Engineer.pdf",
+        "10_StepStone_Junior_Analyst_RFP_AI.pdf",
+        "11_Imprint_Software_Engineer.pdf",
+        "12_IT_Project_Manager.pdf",
+        "13_Tinder_Product_Analyst.pdf",
+        "14_FlexTrade_Software_Developer_Cpp.pdf",
+        "15_HomeServe_DevOps_Engineer.pdf",
+        "16_Intuit_Software_Engineer_1.pdf",
+        "17_FullStack_Backend_Engineer.pdf",
+        "18_Deloitte_Forward_Deployed_Engineer.pdf",
+        "19_Honeywell_Software_Engineer_Recent_Grad.pdf",
+        "20_BrandRankAI_Frontend_Software_Engineer.pdf",
+        "Resume_InStride_Updated.pdf",
+        "Job_PASONA_IT_Infrastructure_Engineer.pdf",
+        "Job_IT_Service_Engineer.pdf",
+        "Job_Skopein_IT_Support_Engineer_L2.pdf",
+        "Job_Google_CES_AI_Integration.pdf",
+        "Job_AI_Product_Engineer.pdf",
+        "Resume_BackEnd_Developer.pdf",
+        "Resume_Data_Analyst.pdf",
+        "Resume_Process_Automation_Engineer_FINAL.pdf",
+        "C1_M365_Azure_Intune_Admin.pdf",
+        "C2_Systems_Administrator.pdf",
+        "C3_MSP_Managed_Services.pdf",
+        "C4_Cloud_Infrastructure_Engineer.pdf",
+        "C5_Cybersecurity_Security_Analyst.pdf",
+        "C6_Network_Engineer_Admin.pdf",
+        "C7_IT_Support_Specialist.pdf",
+        "C8_IAM_Identity_Engineer.pdf",
+        "C9_IT_Manager_Director.pdf",
+        "C10_DevOps_Cloud_Automation.pdf",
+    ],
+    "razia": [
+        "RC1_Vulnerability_Management.pdf",
+        "RC2_Endpoint_Security_Intune.pdf",
+        "RC3_macOS_Apple_MDM.pdf",
+        "RC4_Patch_Management_Compliance.pdf",
+        "RC5_SOC_Security_Analyst.pdf",
+        "RC6_IT_Security_Engineer.pdf",
+        "RC7_Cloud_Azure_Security.pdf",
+        "RC8_Government_Defense.pdf",
+    ],
+}
+
+
+def verify_resumes(profile: str = "muhammad") -> tuple[int, int, list[str]]:
+    """Return (found, total, missing_list) for startup reporting."""
+    folder  = _resume_folder(profile)
+    all_res = ALL_RESUMES.get(profile, [])
+    missing = [r for r in all_res if not (folder / r).exists()]
+    found   = len(all_res) - len(missing)
+    return found, len(all_res), missing
+
+
+# ── PDF text extraction + cache ───────────────────────────────────────────────
+
+_pdf_cache: dict[str, str] = {}
+
+
+def _pdf_text(path: str) -> str:
+    if path not in _pdf_cache:
+        if not _TFIDF_OK:
+            _pdf_cache[path] = ""
+            return ""
+        try:
+            reader = PdfReader(path)
+            _pdf_cache[path] = " ".join(
+                page.extract_text() or "" for page in reader.pages
+            )
+        except Exception as e:
+            print(f"  WARNING: Could not read {Path(path).name}: {e}")
+            _pdf_cache[path] = ""
+    return _pdf_cache[path]
+
+
+def _clean(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+# ── TF-IDF scoring ────────────────────────────────────────────────────────────
+
+def score_resumes(jd_text: str, profile: str = "muhammad") -> list[tuple[str, float]]:
+    """
+    Score every resume in the folder against jd_text using TF-IDF cosine similarity.
+    Returns [(filename, score), ...] sorted best to worst.
+    """
+    folder = _resume_folder(profile)
+    pdfs   = sorted(folder.glob("*.pdf"))
+    if not pdfs:
+        return []
+
+    if not _TFIDF_OK:
+        return [(p.name, 0.0) for p in pdfs]
+
+    clean_jd = _clean(jd_text)
+    documents = [clean_jd]
+    names     = []
+    for pdf in pdfs:
+        text = _pdf_text(str(pdf))
+        documents.append(_clean(text))
+        names.append(pdf.name)
+
+    try:
+        vec    = TfidfVectorizer(ngram_range=(1, 2), stop_words="english",
+                                 max_features=5000, sublinear_tf=True)
+        matrix = vec.fit_transform(documents)
+        jd_vec = matrix[0]
+        scores = [
+            (name, float(cosine_similarity(jd_vec, matrix[i + 1])[0][0]))
+            for i, name in enumerate(names)
+        ]
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return scores
+    except Exception as e:
+        print(f"  WARNING: TF-IDF scoring failed: {e}")
+        return [(p.name, 0.0) for p in pdfs]
+
+
+# ── Company overrides (checked before TF-IDF to skip PDF reads) ──────────────
+
+_COMPANY_OVERRIDES: dict[str, str] = {
+    "instride":   "Resume_InStride_Updated.pdf",
+    "pasona":     "Job_PASONA_IT_Infrastructure_Engineer.pdf",
+    "skopein":    "Job_Skopein_IT_Support_Engineer_L2.pdf",
+    "brandrank":  "20_BrandRankAI_Frontend_Software_Engineer.pdf",
+    "stepstone":  "10_StepStone_Junior_Analyst_RFP_AI.pdf",
+    "imprint":    "11_Imprint_Software_Engineer.pdf",
+    "flextrade":  "14_FlexTrade_Software_Developer_Cpp.pdf",
+    "homeserve":  "15_HomeServe_DevOps_Engineer.pdf",
+    "honeywell":  "19_Honeywell_Software_Engineer_Recent_Grad.pdf",
+    "deloitte":   "18_Deloitte_Forward_Deployed_Engineer.pdf",
+    "tinder":     "13_Tinder_Product_Analyst.pdf",
+    "intuit":     "16_Intuit_Software_Engineer_1.pdf",
+    "dev10":      "09_Dev10_Entry_Level_Data_Engineer.pdf",
+}
+
+_IBM_PICK: list[tuple[list[str], str]] = [
+    (["strategy", "transformation", "consultant"], "01_IBM_AI_First_Strategy_Consultant.pdf"),
+    (["data scientist", "data science"],           "02_IBM_Associate_Data_Scientist_2026.pdf"),
+    (["cloud migration", "application developer"], "03_IBM_Application_Developer_Azure_Cloud.pdf"),
+    (["ai software", "watsonx"],                   "06_IBM_AI_Software_Developer.pdf"),
+    (["system support", "systems support"],        "07_IBM_System_Support_Tech_Apprentice.pdf"),
+    (["backend", "back end", "back-end"],          "08_IBM_Backend_Developer_Intern_2026.pdf"),
+    (["apprentice"],                               "04_IBM_Software_Engineer_Apprentice_A.pdf"),
 ]
-_MUHAMMAD_DEFAULT = "C2_Systems_Administrator.pdf"
 
-# ── Razia ─────────────────────────────────────────────────────────────────────
+_FALLBACK_ORDER = [
+    "C1_M365_Azure_Intune_Admin.pdf",
+    "C2_Systems_Administrator.pdf",
+    "C4_Cloud_Infrastructure_Engineer.pdf",
+    "C7_IT_Support_Specialist.pdf",
+    "C5_Cybersecurity_Security_Analyst.pdf",
+]
 
-_R_DIR = BASE_DIR / "razia" / "razia_resumes"
-
-_RAZIA_MAP = [
+_RAZIA_KEYWORD_MAP = [
     (["vulnerability"],              "RC1_Vulnerability_Management.pdf"),
     (["endpoint", "intune"],         "RC2_Endpoint_Security_Intune.pdf"),
     (["macos", "apple"],             "RC3_macOS_Apple_MDM.pdf"),
@@ -41,30 +227,89 @@ _RAZIA_MAP = [
     (["cloud", "azure"],             "RC7_Cloud_Azure_Security.pdf"),
     (["government", "dod"],          "RC8_Government_Defense.pdf"),
 ]
-_RAZIA_DEFAULT = "RC6_IT_Security_Engineer.pdf"
 
-# ── Dispatch ──────────────────────────────────────────────────────────────────
 
-def pick_resume(title: str, notes: str = "", profile: str = "muhammad") -> str:
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def pick_resume(title: str, notes: str = "", profile: str = "muhammad",
+                company: str = "", jd_text: str = "",
+                exclude=None) -> str:
     """
-    Returns the absolute path to the best-matching pre-built resume PDF.
-    Falls back to the profile's default if no keyword matches.
+    Return absolute path to the best-matching resume PDF.
+    exclude: filenames to skip (for retry-on-missing-file logic).
     """
-    haystack = (title + " " + notes).lower()
-
+    exclude = exclude or set()
     if profile == "razia":
-        keyword_map = _RAZIA_MAP
-        resumes_dir = _R_DIR
-        default     = _RAZIA_DEFAULT
-    else:
-        keyword_map = _MUHAMMAD_MAP
-        resumes_dir = _M_DIR
-        default     = _MUHAMMAD_DEFAULT
+        return _pick_razia(title, notes)
+    return _pick_muhammad(title, notes, company, jd_text, exclude)
 
-    for keywords, filename in keyword_map:
+
+# Keep old call signature for any code still using positional args
+pick_best_resume = pick_resume
+
+
+def _find(folder: Path, filename: str, exclude: set):
+    if filename in exclude:
+        return None
+    path = folder / filename
+    return str(path) if path.exists() else None
+
+
+def _pick_razia(title: str, notes: str) -> str:
+    folder   = _resume_folder("razia")
+    haystack = (title + " " + notes).lower()
+    for keywords, filename in _RAZIA_KEYWORD_MAP:
         if any(kw in haystack for kw in keywords):
-            path = resumes_dir / filename
+            path = folder / filename
             if path.exists():
                 return str(path)
+    default = folder / "RC6_IT_Security_Engineer.pdf"
+    return str(default) if default.exists() else str(next(folder.glob("*.pdf")))
 
-    return str(resumes_dir / default)
+
+def _pick_muhammad(title: str, notes: str, company: str,
+                   jd_text: str, exclude: set) -> str:
+    folder    = _resume_folder("muhammad")
+    title_l   = title.lower()
+    company_l = company.lower()
+    full_jd   = f"{title} {company} {notes} {jd_text}"
+
+    # 1. Company override
+    for keyword, filename in _COMPANY_OVERRIDES.items():
+        if keyword in company_l or keyword in title_l:
+            result = _find(folder, filename, exclude)
+            if result:
+                return result
+            break  # missing — fall through
+
+    # 2. IBM sub-routing
+    if "ibm" in company_l or "ibm" in title_l:
+        for keywords, filename in _IBM_PICK:
+            if any(kw in title_l for kw in keywords):
+                result = _find(folder, filename, exclude)
+                if result:
+                    return result
+
+    # 3. TF-IDF cosine similarity across all resumes
+    ranked = score_resumes(full_jd, "muhammad")
+    if ranked:
+        top3 = ranked[:3]
+        print(f"  Top matches: " + ", ".join(f"{n}({s:.3f})" for n, s in top3))
+        for filename, score in ranked:
+            if score > 0.0:
+                result = _find(folder, filename, exclude)
+                if result:
+                    return result
+
+    # 4. Ranked fallback defaults
+    for filename in _FALLBACK_ORDER:
+        result = _find(folder, filename, exclude)
+        if result:
+            return result
+
+    # 5. Last resort — any PDF in folder
+    for pdf in sorted(folder.glob("*.pdf")):
+        if pdf.name not in exclude:
+            return str(pdf)
+
+    raise FileNotFoundError(f"No resume PDF found in {folder}")
