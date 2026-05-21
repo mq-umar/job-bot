@@ -907,9 +907,15 @@ def main():
     browser_dir.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as p:
-        # Remove stale Chrome lock files from any previous unclean shutdown
+        # Remove ALL stale Chrome lock files — singleton locks and every
+        # LevelDB LOCK file inside the profile left by unclean shutdowns
         for lf in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
             (browser_dir / lf).unlink(missing_ok=True)
+        for lock in browser_dir.rglob("LOCK"):
+            try:
+                lock.unlink()
+            except Exception:
+                pass
 
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(browser_dir),

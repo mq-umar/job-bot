@@ -221,13 +221,27 @@ def run_session(config: Dict) -> None:
             limit,
         )
 
+        # ── Warn early if nothing to process ──────────────────────────────────
+        if BOT_STATE.jobs_total == 0 and not discover:
+            emit("warning",
+                 f"No new jobs for '{profile_name}' — "
+                 f"{stats.duplicates + len(applied_urls)} already applied. "
+                 "Add more jobs to jobs.csv or enable Discovery mode.",
+                 event_type="log")
+
         browser_dir = BROWSER_PROF / profile_name
         browser_dir.mkdir(parents=True, exist_ok=True)
 
         with sync_playwright() as p:
-            # Remove stale Chrome lock files from any previous unclean shutdown
+            # Remove ALL stale Chrome lock files — top-level singleton locks AND
+            # every LevelDB LOCK file inside the profile (left by unclean shutdowns)
             for lf in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
                 (browser_dir / lf).unlink(missing_ok=True)
+            for lock in browser_dir.rglob("LOCK"):
+                try:
+                    lock.unlink()
+                except Exception:
+                    pass
 
             context = p.chromium.launch_persistent_context(
                 user_data_dir=str(browser_dir),
@@ -336,23 +350,36 @@ def run_session(config: Dict) -> None:
 
             except Exception as e:
                 emit("error", f"Session error: {e}", event_type="log")
+            else:
+                # ── Jobs done — emit summary then hold browser open ────────
+                summary = {
+                    "jobs_applied": jobs_run,
+                    "submitted":    stats.submitted,
+                    "failed":       stats.submit_failed,
+                    "errors":       stats.errors,
+                    "dry_run":      stats.dry_run,
+                }
+                if jobs_run == 0:
+                    emit("warning",
+                         f"No jobs processed for '{profile_name}'. "
+                         f"All {len(applied_urls)} jobs in jobs.csv were already applied. "
+                         "Add new URLs to jobs.csv or enable Discovery mode.",
+                         event_type="log")
+                emit("info",
+                     f"Session complete — {stats.submitted} submitted, "
+                     f"{stats.errors} errors",
+                     event_type="summary", data=summary)
+                emit("info",
+                     "Browser staying open. Click Stop Bot to close it.",
+                     event_type="log")
+                # Hold browser open until user explicitly stops the session
+                while not BOT_STATE._abort.is_set():
+                    time.sleep(0.5)
             finally:
                 try:
                     context.close()
                 except Exception:
                     pass
-
-        # ── Summary ───────────────────────────────────────────────────────
-        summary = {
-            "jobs_applied": jobs_run,
-            "submitted":    stats.submitted,
-            "failed":       stats.submit_failed,
-            "errors":       stats.errors,
-            "dry_run":      stats.dry_run,
-        }
-        emit("info",
-             f"Session complete — {stats.submitted} submitted, {stats.errors} errors",
-             event_type="summary", data=summary)
 
     except Exception as e:
         emit("error", f"Fatal error: {e}", event_type="log")
