@@ -903,6 +903,139 @@ def fill_indeed_easy_apply(page, context, profile: dict, profile_name: str,
     return "no_button"
 
 
+# ── LinkedIn apply handler ────────────────────────────────────────────────────
+
+def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
+                           resume_pdf_path: str, log: list,
+                           company: str = "", title: str = "") -> tuple:
+    """
+    Handle a LinkedIn job page apply flow.
+    Returns (method, redirect_page):
+      ("easy_apply", page)       — Easy Apply modal filled to submit step
+      ("company_site", new_page) — regular Apply opened a new/same tab
+      ("no_button", None)        — no apply button found
+    """
+    human_delay(1.5, 2.5)
+    resume_name = Path(resume_pdf_path).name
+
+    # ── Easy Apply modal ──────────────────────────────────────────────────────
+    try:
+        easy_btn = page.locator("button:has-text('Easy Apply')").first
+        if easy_btn.is_visible(timeout=3000):
+            easy_btn.click()
+            try:
+                page.wait_for_selector(
+                    ".jobs-easy-apply-modal, [data-test-modal], [role='dialog']",
+                    timeout=10000,
+                )
+            except Exception:
+                pass
+            human_delay(1, 1.5)
+
+            for _step in range(15):
+                if detect_recaptcha(page):
+                    print("\n  [CAPTCHA] reCAPTCHA — solve then press Enter...")
+                    input("  > ")
+
+                # Replace resume if file input visible on this step
+                try:
+                    fi = page.locator("input[type='file']").first
+                    if fi.is_visible(timeout=500):
+                        replace_linkedin_resume(page, resume_pdf_path, log)
+                        human_delay(1, 2)
+                except Exception:
+                    pass
+
+                _scan_and_fill(page, profile, profile_name, resume_name,
+                               log, company, title)
+
+                # Submit button visible → final step reached
+                try:
+                    sub = page.locator(
+                        "button:has-text('Submit application'), "
+                        "button:has-text('Submit Application')"
+                    ).first
+                    if sub.is_visible(timeout=500):
+                        print(f"  [LinkedIn] Reached submit step")
+                        return "easy_apply", page
+                except Exception:
+                    pass
+
+                # Advance to next step
+                advanced = False
+                for btn_text in ["Next", "Continue", "Review"]:
+                    try:
+                        nav = page.locator(f"button:has-text('{btn_text}')").last
+                        if nav.is_visible(timeout=1000):
+                            nav.click()
+                            human_delay(1, 2)
+                            advanced = True
+                            break
+                    except Exception:
+                        pass
+                if not advanced:
+                    # One last check for submit
+                    try:
+                        sub = page.locator(
+                            "button:has-text('Submit application'), "
+                            "button:has-text('Submit Application')"
+                        ).first
+                        if sub.is_visible(timeout=1000):
+                            return "easy_apply", page
+                    except Exception:
+                        pass
+                    break
+
+            # Return easy_apply even if we couldn't confirm the submit step —
+            # _finish_job will attempt click_submit and check for confirmation
+            return "easy_apply", page
+    except Exception:
+        pass
+
+    # ── Regular Apply → new tab or same-tab redirect ──────────────────────────
+    for btn_sel in [
+        "button.jobs-apply-button",
+        "a.jobs-apply-button",
+        "button:has-text('Apply now')",
+        "button:has-text('Apply')",
+        "a:has-text('Apply on company website')",
+    ]:
+        try:
+            btn = page.locator(btn_sel).first
+            if not btn.is_visible(timeout=2000):
+                continue
+            pages_before = len(context.pages)
+            url_before   = page.url
+            btn.click()
+            human_delay(2, 3)
+
+            # New tab?
+            if len(context.pages) > pages_before:
+                new_page = context.pages[-1]
+                try:
+                    new_page.wait_for_load_state("domcontentloaded", timeout=30000)
+                except Exception:
+                    pass
+                human_delay(1.5, 2.5)
+                log.append({"field": "linkedin_apply_mode", "status": "filled",
+                            "value": "company_site → new tab"})
+                return "company_site", new_page
+
+            # Same-tab redirect?
+            if page.url != url_before:
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=30000)
+                except Exception:
+                    pass
+                log.append({"field": "linkedin_apply_mode", "status": "filled",
+                            "value": "company_site → same tab"})
+                return "company_site", page
+        except Exception:
+            pass
+
+    return "no_button", None
+
+
 # ── Submit helpers ────────────────────────────────────────────────────────────
 
 def find_submit_button(page, platform: str):
@@ -933,6 +1066,8 @@ CONFIRMATION_KEYWORDS = [
     "you've applied", "you have applied", "application sent",
     "your application has been", "successfully applied",
     "application confirmed", "we received your",
+    "your application was sent",        # LinkedIn Easy Apply
+    "application was submitted",
 ]
 
 

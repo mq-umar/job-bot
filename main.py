@@ -41,7 +41,8 @@ from rich.table import Table
 from form_filler import (
     click_submit, detect_platform, detect_recaptcha, dismiss_popups,
     extract_job_description, fill_form, fill_indeed_easy_apply,
-    find_submit_button, parse_max_salary, wait_for_submission_confirmation,
+    find_submit_button, handle_linkedin_apply, parse_max_salary,
+    wait_for_submission_confirmation,
 )
 from job_finder import append_to_jobs_csv, discover_jobs
 from resume_selector import fit_label, pick_resume_with_details, verify_resumes
@@ -512,7 +513,52 @@ def process_job(page, context, row: dict, row_num: int,
                     score, fit, keywords, dry_run, review,
                 )
 
-    # ── 5. JD + resume selection (non-Indeed or Indeed fallthrough) ──────────
+    # ── 4b. LinkedIn handling ─────────────────────────────────────────────────
+    elif platform == "linkedin":
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
+        watchdog.ping()
+
+        jd_text  = extract_job_description(page, "linkedin")
+        pdf_path, score, fit, keywords, fname = pick_resume_with_details(
+            title, notes, profile_name, company, jd_text,
+        )
+        _print_resume_selection(title, company, fname, score, fit, keywords)
+
+        if min_score > 0 and score < min_score and fit == "Low Fit":
+            print_status("SKIPPED", f"score {score:.3f} < {min_score} (Low Fit)")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_low_fit", pdf_path,
+                score, fit, keywords, notes=f"score {score:.3f}"))
+            applied_urls.add(norm_url)
+            return "continue"
+
+        linkedin_log: list = []
+        mode, redirect_page = handle_linkedin_apply(
+            page, context, profile, profile_name, pdf_path,
+            linkedin_log, company, title,
+        )
+        watchdog.ping()
+        console.print(f"  LinkedIn mode: [cyan]{mode}[/cyan]")
+
+        if mode == "company_site":
+            active_page = redirect_page
+            platform    = detect_platform(active_page.url)
+            row["platform"] = platform
+            console.print(f"  Redirected to: [cyan]{platform}[/cyan]")
+
+        elif mode == "easy_apply":
+            return _finish_job(
+                page, row, profile, profile_name, pdf_path,
+                linkedin_log, "linkedin", applied_urls, stats, watchdog,
+                score, fit, keywords, dry_run, review,
+                apply_method="easy_apply",
+            )
+        # mode == "no_button": fall through to generic form handling below
+
+    # ── 5. JD + resume selection (non-LinkedIn/Indeed, or redirect fallthrough) ─
     if not pdf_path:
         jd_text = extract_job_description(active_page, platform)
         console.print(f"  JD: {len(jd_text)} chars")
@@ -529,12 +575,8 @@ def process_job(page, context, row: dict, row_num: int,
                 score, fit, keywords, notes=f"score {score:.3f}"))
             applied_urls.add(norm_url)
             return "continue"
-    else:
-        score, fit, keywords = (
-            float(row.get("_score", 0.0)),
-            row.get("_fit", "Low Fit"),
-            row.get("_keywords", []),
-        )
+    # (if pdf_path already set by LinkedIn/Indeed block, score/fit/keywords are
+    # already correct — no else branch needed)
 
     watchdog.ping()
 
@@ -680,7 +722,7 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
         applied_urls.add(norm_url)
         return "continue"
 
-    # Review mode or non-review auto-submit
+    # Review mode: ask before submitting. Auto mode: submit immediately.
     if review:
         while True:
             ans = input("  Submit? (y/n/q): ").strip().lower()
@@ -696,27 +738,7 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
                 screenshot=scr_filled, field_log=field_log, apply_method=apply_method))
             applied_urls.add(norm_url)
             return "continue"
-    else:
-        # Non-review: still show the form, ask once
-        while True:
-            ans = input("  Submit? (y / n / s=stop all): ").strip().lower()
-            if ans in ("y", "n", "s"):
-                break
-        watchdog.ping()
-        if ans == "s":
-            log_result(profile_name, _make_entry(
-                profile_name, row, "skipped_manual", pdf_path, score, fit,
-                keywords, screenshot=scr_filled, notes="user stopped",
-                field_log=field_log, apply_method=apply_method))
-            return "stop"
-        if ans == "n":
-            print_status("SKIPPED", "manual skip")
-            log_result(profile_name, _make_entry(
-                profile_name, row, "skipped_manual", pdf_path, score, fit,
-                keywords, screenshot=scr_filled, field_log=field_log,
-                apply_method=apply_method))
-            applied_urls.add(norm_url)
-            return "continue"
+    # else: auto mode — proceed to submit without prompting
 
     # ── Submit ────────────────────────────────────────────────────────────────
     if detect_recaptcha(active_page):
