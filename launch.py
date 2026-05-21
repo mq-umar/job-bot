@@ -47,8 +47,9 @@ def main():
         if ui_dir.exists() and (ui_dir / "package.json").exists():
             print("Building UI (first run)...")
             try:
-                subprocess.run(["npm", "install"], cwd=str(ui_dir), check=True)
-                subprocess.run(["npm", "run", "build"], cwd=str(ui_dir), check=True)
+                _npm = "npm.cmd" if sys.platform == "win32" else "npm"
+                subprocess.run([_npm, "install"], cwd=str(ui_dir), check=True)
+                subprocess.run([_npm, "run", "build"], cwd=str(ui_dir), check=True)
                 print("UI built successfully.")
             except Exception as e:
                 print(f"Warning: Could not build UI: {e}")

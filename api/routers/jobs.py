@@ -25,13 +25,33 @@ def _read_jobs_csv() -> list:
 
 
 def _read_results(profile: Optional[str] = None) -> list:
+    """Read results from JSONL (authoritative) — immune to CSV schema corruption."""
+    import json as _json
+    import math as _math
+
+    def _sanitize(obj):
+        """Replace NaN/inf floats with empty string (not JSON-serializable)."""
+        if isinstance(obj, dict):
+            return {k: _sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize(v) for v in obj]
+        if isinstance(obj, float) and (_math.isnan(obj) or _math.isinf(obj)):
+            return ""
+        return obj
+
     results = []
-    pattern = f"results_{profile}.csv" if profile else "results_*.csv"
-    for csv_path in OUTPUT_DIR.glob(pattern):
+    pattern = f"results_{profile}.jsonl" if profile else "results_*.jsonl"
+    for jsonl_path in OUTPUT_DIR.glob(pattern):
         try:
-            import pandas as pd
-            df = pd.read_csv(csv_path)
-            results.extend(df.fillna("").to_dict("records"))
+            with open(jsonl_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        results.append(_sanitize(_json.loads(line)))
+                    except Exception:
+                        pass
         except Exception:
             pass
     return results

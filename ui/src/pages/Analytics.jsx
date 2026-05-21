@@ -62,8 +62,8 @@ export default function Analytics() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           ['Total Applied', data.total, 'text-slate-100'],
-          ['Submitted',     data.by_status?.submitted || 0, 'text-success'],
-          ['Failed',        (data.by_status?.submit_failed||0)+(data.by_status?.error||0), 'text-error'],
+          ['Submitted', (data.by_status?.submitted||0)+(data.by_status?.submitted_manually||0), 'text-success'],
+          ['Failed',    (data.by_status?.submit_failed||0)+(data.by_status?.error||0), 'text-error'],
           ['Most Used Resume', resumeData[0]?.filename?.split('_').slice(0,2).join(' ') || '—', 'text-primary text-sm'],
         ].map(([l,v,c]) => (
           <div key={l} className="bg-[#1a1d27] border border-[#2a2d3e] rounded-xl p-4">

@@ -467,9 +467,12 @@ def _all_known_urls(profile_name: str) -> set:
             urls.update(pd.read_csv(jobs_csv)["url"].dropna().astype(str))
         except Exception:
             pass
+    # results CSV uses "job_url" column (not "url") — try both for safety
     for results_csv in (BASE_DIR / "output").glob("results_*.csv"):
         try:
-            urls.update(pd.read_csv(results_csv)["url"].dropna().astype(str))
+            df = pd.read_csv(results_csv)
+            col = "job_url" if "job_url" in df.columns else "url"
+            urls.update(df[col].dropna().astype(str))
         except Exception:
             pass
     return urls
@@ -495,6 +498,9 @@ def discover_jobs(page, context, profile_name: str, applied_urls: set,
 
     print(f"\n  Reading {profile_name}'s resumes to generate search queries...")
     search_terms = extract_search_terms(profile_name)
+
+    # Build search queries once — used by Tier 3 (LinkedIn) and Tier 4 (Google)
+    queries: list = []
 
     # ── Tier 1: Direct company career pages ──────────────────────────────────
     if tier_max >= 1:
@@ -536,7 +542,7 @@ def discover_jobs(page, context, profile_name: str, applied_urls: set,
 
     # ── Tier 4: Google Jobs ───────────────────────────────────────────────────
     if tier_max >= 4 and not companies_only:
-        if tier_max < 3:
+        if not queries:
             queries = build_search_queries(search_terms)
         goog_queries = [q for q in queries if q["platform"] == "google"]
         print(f"\n  [Tier 4] Searching Google Jobs ({len(goog_queries)} queries)...")

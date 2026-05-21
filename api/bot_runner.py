@@ -70,6 +70,9 @@ class BotState:
         self.jobs_applied: int = 0
         self.jobs_total: int = 0
         self.session_config: Optional[Dict] = None
+        self.session_submitted: int = 0
+        self.session_failed: int = 0
+        self.session_errors: int = 0
         self._abort   = threading.Event()
         self._pause   = threading.Event()
         self._captcha = threading.Event()
@@ -86,6 +89,9 @@ class BotState:
         self.jobs_applied = 0
         self.jobs_total   = 0
         self.current_job  = None
+        self.session_submitted = 0
+        self.session_failed = 0
+        self.session_errors = 0
 
     def stop(self) -> None:
         self._abort.set()
@@ -112,10 +118,13 @@ class BotState:
 
     def to_dict(self) -> Dict:
         return {
-            "status":       self.status,
-            "current_job":  self.current_job,
-            "jobs_applied": self.jobs_applied,
-            "jobs_total":   self.jobs_total,
+            "status":            self.status,
+            "current_job":       self.current_job,
+            "jobs_applied":      self.jobs_applied,
+            "jobs_total":        self.jobs_total,
+            "session_submitted": self.session_submitted,
+            "session_failed":    self.session_failed,
+            "session_errors":    self.session_errors,
         }
 
 
@@ -185,6 +194,10 @@ def run_session(config: Dict) -> None:
     old_stdout = sys.stdout
     sys.stdout  = _LogCapture()
 
+    # Will be set after imports so the finally block can restore them
+    _main_module_ref: Any = None
+    _orig_log_result: Any = None
+
     try:
         import random
         import time
@@ -192,11 +205,38 @@ def run_session(config: Dict) -> None:
         from playwright.sync_api import sync_playwright
 
         from main import (
-            load_profile, load_applied_urls, normalize_url,
+            load_profile, load_applied_urls, load_blacklist, normalize_url,
             log_result, _make_entry, process_job, SessionStats,
             OUTPUT_DIR, BROWSER_PROF,
         )
         from job_finder import discover_jobs, append_to_jobs_csv
+
+        # Patch log_result to track live session stats and emit rich job_result events
+        import main as _main_module_ref
+        _orig_log_result = _main_module_ref.log_result
+
+        def _tracking_log_result(profile_name_: str, entry: Dict) -> None:
+            _orig_log_result(profile_name_, entry)
+            status  = entry.get("status", "")
+            company = entry.get("company", "")
+            title   = entry.get("title", "")
+            fit     = entry.get("fit_label", "")
+            score   = entry.get("resume_score", "0")
+            if status in ("submitted", "submitted_manually"):
+                BOT_STATE.session_submitted += 1
+            elif status == "submit_failed":
+                BOT_STATE.session_failed += 1
+            elif status == "error":
+                BOT_STATE.session_errors += 1
+            icon = ("✓" if status in ("submitted", "submitted_manually")
+                    else "✗" if status in ("error", "submit_failed")
+                    else "○")
+            emit("info", f"{icon} {company} — {title} [{status}]",
+                 event_type="job_result",
+                 data={"company": company, "title": title, "status": status,
+                       "fit_label": fit, "score": score})
+
+        _main_module_ref.log_result = _tracking_log_result
 
         profile  = load_profile(profile_name)
         jobs_csv = BASE_DIR / "jobs.csv"
@@ -213,6 +253,7 @@ def run_session(config: Dict) -> None:
             df = df[df["id"] >= start_id]
 
         applied_urls = load_applied_urls(profile_name)
+        blacklist    = load_blacklist()
         stats        = SessionStats()
         jobs_run     = 0
 
@@ -243,19 +284,49 @@ def run_session(config: Dict) -> None:
                 except Exception:
                     pass
 
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(browser_dir),
-                headless=False,
-                channel="chrome",
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
-                ignore_default_args=["--enable-automation"],
-                viewport={"width": 1440, "height": 900},
-            )
+            # Reset Chrome crash state — prevents "Something went wrong with your
+            # profile" dialog after an unclean shutdown (exit_type="Crashed")
+            import json as _j
+            _prefs_path = browser_dir / "Default" / "Preferences"
+            if _prefs_path.exists():
+                try:
+                    with open(_prefs_path) as _f:
+                        _prefs = _j.load(_f)
+                    _p = _prefs.get("profile", {})
+                    if _p.get("exit_type") == "Crashed":
+                        _p["exit_type"]      = "Normal"
+                        _p["exited_cleanly"] = True
+                        _prefs["profile"]    = _p
+                        with open(_prefs_path, "w") as _f:
+                            _j.dump(_prefs, _f, separators=(",", ":"))
+                        emit("info", f"Fixed Chrome exit state for {profile_name}")
+                except Exception:
+                    pass
+
+            _browser_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ]
+            try:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=str(browser_dir),
+                    headless=False,
+                    channel="chrome",
+                    args=_browser_args,
+                    ignore_default_args=["--enable-automation"],
+                    viewport={"width": 1440, "height": 900},
+                )
+            except Exception:
+                # Fallback: use bundled Chromium if Chrome not installed
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=str(browser_dir),
+                    headless=False,
+                    args=_browser_args,
+                    ignore_default_args=["--enable-automation"],
+                    viewport={"width": 1440, "height": 900},
+                )
             context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
@@ -294,6 +365,7 @@ def run_session(config: Dict) -> None:
                         page, context, row.to_dict(), int(row.get("id", 0)),
                         profile, profile_name, applied_urls, stats,
                         dry_run=dry_run, review=review, min_score=min_score,
+                        blacklist=blacklist,
                     )
                     jobs_run += 1
                     BOT_STATE.jobs_applied = jobs_run
@@ -340,6 +412,7 @@ def run_session(config: Dict) -> None:
                                 page, context, job_row, job_row["id"],
                                 profile, profile_name, applied_urls, stats,
                                 dry_run=dry_run, review=review, min_score=min_score,
+                                blacklist=blacklist,
                             )
                             jobs_run += 1
                             BOT_STATE.jobs_applied = jobs_run
@@ -384,6 +457,8 @@ def run_session(config: Dict) -> None:
     except Exception as e:
         emit("error", f"Fatal error: {e}", event_type="log")
     finally:
+        if _main_module_ref is not None and _orig_log_result is not None:
+            _main_module_ref.log_result = _orig_log_result
         builtins.input = _original_input
         sys.stdout     = old_stdout
         BOT_STATE.current_job = None

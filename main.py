@@ -251,20 +251,86 @@ def load_profile(name: str) -> dict:
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
 
-def load_applied_urls(profile_name: str) -> set:
-    results_csv = OUTPUT_DIR / f"results_{profile_name}.csv"
-    applied: set = set()
-    if not results_csv.exists():
-        return applied
+# Only these statuses mean "genuinely done — skip forever".
+# Retriable: error, skipped_low_fit, submit_failed, stuck, watchdog_timeout
+# Not retriable: no apply button found, or manual-only — bot will never succeed on these
+_DONE_STATUSES = frozenset({
+    "submitted", "submitted_manually", "already_applied", "closed", "dry_run",
+    "skipped_no_button", "button_not_found", "skipped_manual",
+})
+
+
+def load_blacklist() -> set:
+    """Load company blacklist from config/blacklist.json. Returns lowercase set."""
+    bl_path = BASE_DIR / "config" / "blacklist.json"
+    if bl_path.exists():
+        try:
+            import json as _j
+            with open(bl_path) as f:
+                return {x.lower().strip() for x in _j.load(f) if x.strip()}
+        except Exception:
+            pass
+    return set()
+
+
+def is_blacklisted(company: str, url: str, blacklist: set) -> bool:
+    """Return True if company name or URL domain matches any blacklist entry."""
+    co_low  = company.lower()
     try:
-        with open(results_csv, newline="") as f:
-            for row in csv.DictReader(f):
-                status = row.get("status", "").lower()
-                url    = normalize_url(row.get("job_url", row.get("url", "")).strip())
-                if url and status not in ("error",):
-                    applied.add(url)
+        from urllib.parse import urlparse as _up
+        domain = _up(url).netloc.lower().removeprefix("www.")
     except Exception:
-        pass
+        domain = ""
+    return any(bl in co_low or bl in domain for bl in blacklist)
+
+
+def load_applied_urls(profile_name: str) -> set:
+    """
+    Return the set of normalised URLs that have been genuinely completed.
+    Reads BOTH JSONL and CSV so historical pre-JSONL entries are not re-applied.
+    JSONL is the authoritative source for new entries; CSV covers legacy records.
+    """
+    applied: set = set()
+
+    # Primary: JSONL — always clean, never affected by CSV column shifts
+    jsonl_path = OUTPUT_DIR / f"results_{profile_name}.jsonl"
+    if jsonl_path.exists():
+        try:
+            with open(jsonl_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry  = json.loads(line)
+                        status = entry.get("status", "").lower()
+                        url    = normalize_url(
+                            entry.get("job_url", entry.get("url", "")).strip()
+                        )
+                        if url and status in _DONE_STATUSES:
+                            applied.add(url)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Also read CSV for any pre-JSONL legacy entries not yet in the JSONL.
+    # csv.DictReader reads by column name so it handles old (8-col) and new
+    # (24-col) schemas without crashing — we only need "status" and "url"/"job_url".
+    results_csv = OUTPUT_DIR / f"results_{profile_name}.csv"
+    if results_csv.exists():
+        try:
+            with open(results_csv, newline="") as f:
+                for row in csv.DictReader(f):
+                    status = row.get("status", "").lower()
+                    url    = normalize_url(
+                        row.get("job_url", row.get("url", "")).strip()
+                    )
+                    if url and status in _DONE_STATUSES:
+                        applied.add(url)
+        except Exception:
+            pass
+
     return applied
 
 
@@ -285,11 +351,12 @@ def log_result(profile_name: str, entry: dict):
     entry.setdefault("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M"))
     entry.setdefault("profile",   profile_name)
 
-    # CSV
+    # CSV — QUOTE_ALL prevents matched_keywords commas from corrupting column alignment
     csv_path = OUTPUT_DIR / f"results_{profile_name}.csv"
     exists   = csv_path.exists()
     with open(csv_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=_CSV_FIELDS, extrasaction="ignore",
+                                quoting=csv.QUOTE_ALL)
         if not exists:
             writer.writeheader()
         writer.writerow(entry)
@@ -402,7 +469,8 @@ def process_job(page, context, row: dict, row_num: int,
                 profile: dict, profile_name: str,
                 applied_urls: set, stats: SessionStats,
                 dry_run: bool = False, review: bool = False,
-                min_score: float = 0.05) -> str:
+                min_score: float = 0.05,
+                blacklist: set = None) -> str:
     """
     Returns "continue" | "stop".
     Applies to EVERY job — never skips based on salary, seniority, or score
@@ -422,6 +490,12 @@ def process_job(page, context, row: dict, row_num: int,
     # ── 1. Deduplication ─────────────────────────────────────────────────────
     if norm_url in applied_urls:
         print_status("ALREADY_APPLIED")
+        stats.duplicates += 1
+        return "continue"
+
+    # ── 1b. Blacklist check ──────────────────────────────────────────────────
+    if blacklist and is_blacklisted(company, url, blacklist):
+        print_status("SKIPPED", f"blacklisted: {company}")
         stats.duplicates += 1
         return "continue"
 
@@ -654,6 +728,47 @@ def process_job(page, context, row: dict, row_num: int,
         applied_urls.add(norm_url)
         return "continue"
 
+    # ── 8c. Click apply button (non-LinkedIn, non-Indeed) ───────────────────
+    # LinkedIn/Indeed handle their own modal; for every other ATS we must
+    # click the "Apply" button before the form becomes accessible.
+    if platform not in ("linkedin", "indeed"):
+        from form_filler import find_apply_button as _fab, find_submit_button as _fsb
+        # Only click if the form isn't already showing (check for a submit btn)
+        form_visible = _fsb(active_page, platform) is not None
+        if not form_visible:
+            _btn, _btn_type = _fab(active_page, platform, context)
+            if _btn is not None:
+                _pages_before = len(context.pages)
+                _url_before   = active_page.url
+                try:
+                    _btn.scroll_into_view_if_needed(timeout=2000)
+                    _btn.click()
+                    time.sleep(2.5)
+                except Exception as _e:
+                    console.print(f"  [yellow]Apply click: {_e}[/yellow]")
+                if len(context.pages) > _pages_before:
+                    active_page = context.pages[-1]
+                    try:
+                        active_page.wait_for_load_state("domcontentloaded", timeout=30000)
+                    except Exception:
+                        pass
+                    platform    = detect_platform(active_page.url)
+                    row["platform"] = platform
+                    console.print(f"  Apply → new tab: [cyan]{platform}[/cyan]")
+                    dismiss_popups(active_page)
+                elif active_page.url.rstrip("/") != _url_before.rstrip("/"):
+                    try:
+                        active_page.wait_for_load_state("domcontentloaded", timeout=30000)
+                    except Exception:
+                        pass
+                    platform    = detect_platform(active_page.url)
+                    row["platform"] = platform
+                    console.print(f"  Apply → navigated: [cyan]{platform}[/cyan]")
+                    dismiss_popups(active_page)
+                else:
+                    time.sleep(1.0)  # form revealed on same page
+                watchdog.ping()
+
     # ── 9. Fill form ──────────────────────────────────────────────────────────
     console.print("  Filling form...")
     try:
@@ -876,6 +991,7 @@ def main():
         df = df[df["id"] >= args.start_id]
 
     applied_urls = load_applied_urls(profile_name)
+    blacklist    = load_blacklist()
     stats        = SessionStats()
 
     # ── Preview table ─────────────────────────────────────────────────────────
@@ -917,19 +1033,48 @@ def main():
             except Exception:
                 pass
 
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(browser_dir),
-            headless=False,
-            channel="chrome",
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ],
-            ignore_default_args=["--enable-automation"],
-            viewport={"width": 1440, "height": 900},
-        )
+        # Reset Chrome crash state — prevents "Something went wrong with your
+        # profile" dialog after an unclean shutdown (exit_type="Crashed")
+        _prefs_path = browser_dir / "Default" / "Preferences"
+        if _prefs_path.exists():
+            try:
+                with open(_prefs_path) as _f:
+                    _prefs = json.load(_f)
+                _p = _prefs.get("profile", {})
+                if _p.get("exit_type") == "Crashed":
+                    _p["exit_type"]      = "Normal"
+                    _p["exited_cleanly"] = True
+                    _prefs["profile"]    = _p
+                    with open(_prefs_path, "w") as _f:
+                        json.dump(_prefs, _f, separators=(",", ":"))
+                    console.print(f"  [dim]Fixed Chrome exit state for {profile_name}[/dim]")
+            except Exception:
+                pass
+
+        _browser_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-infobars",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ]
+        try:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(browser_dir),
+                headless=False,
+                channel="chrome",
+                args=_browser_args,
+                ignore_default_args=["--enable-automation"],
+                viewport={"width": 1440, "height": 900},
+            )
+        except Exception:
+            # Fallback: use bundled Chromium if Chrome not installed
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(browser_dir),
+                headless=False,
+                args=_browser_args,
+                ignore_default_args=["--enable-automation"],
+                viewport={"width": 1440, "height": 900},
+            )
         context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
@@ -953,6 +1098,7 @@ def main():
                     profile, profile_name, applied_urls, stats,
                     dry_run=args.dry_run, review=args.review,
                     min_score=args.min_score,
+                    blacklist=blacklist,
                 )
                 jobs_run += 1
                 if result == "stop":
@@ -987,6 +1133,7 @@ def main():
                             profile, profile_name, applied_urls, stats,
                             dry_run=args.dry_run, review=args.review,
                             min_score=args.min_score,
+                            blacklist=blacklist,
                         )
                         jobs_run += 1
                         if result == "stop":

@@ -9,24 +9,38 @@ const FIT_COLORS = {
   'Possible Fit': 'text-blue-400', 'Stretch': 'text-yellow-400', 'Low Fit': 'text-red-400',
 }
 
+const JOB_RESULT_SUCCESS = new Set(['submitted', 'submitted_manually'])
+const JOB_RESULT_FAIL    = new Set(['error', 'submit_failed'])
+
 function LogEntry({ entry }) {
-  const borderColor = entry.level === 'error' ? 'border-red-500' :
-    entry.type === 'captcha' ? 'border-yellow-500' :
-    entry.type === 'job_done' ? 'border-green-500' : 'border-[#2a2d3e]'
+  let borderColor = 'border-[#2a2d3e]'
+  if (entry.level === 'error')                           borderColor = 'border-red-500'
+  else if (entry.type === 'captcha')                     borderColor = 'border-yellow-500'
+  else if (entry.type === 'job_result') {
+    const s = entry.data?.status || ''
+    if (JOB_RESULT_SUCCESS.has(s))                       borderColor = 'border-green-500'
+    else if (JOB_RESULT_FAIL.has(s))                     borderColor = 'border-red-400'
+    else                                                  borderColor = 'border-slate-600'
+  }
+  else if (entry.type === 'job_done')                    borderColor = 'border-primary/50'
+
+  const textColor = entry.level === 'error'   ? 'text-red-400'
+    : entry.level === 'warning'               ? 'text-yellow-400'
+    : entry.type  === 'job_result' && entry.data?.status && JOB_RESULT_SUCCESS.has(entry.data.status) ? 'text-green-400'
+    : entry.type  === 'job_result' && entry.data?.status && JOB_RESULT_FAIL.has(entry.data.status)    ? 'text-red-400'
+    : 'text-slate-300'
 
   return (
     <div className={`border-l-2 ${borderColor} pl-3 py-1.5`}>
       <div className="flex items-start gap-2">
         <span className="text-slate-500 text-xs shrink-0 font-mono mt-0.5">{entry.timestamp}</span>
-        <span className={`text-sm ${entry.level === 'error' ? 'text-red-400' : entry.level === 'warning' ? 'text-yellow-400' : 'text-slate-300'}`}>
-          {entry.message}
-        </span>
+        <span className={`text-sm ${textColor}`}>{entry.message}</span>
       </div>
-      {entry.data && entry.data.company && (
-        <div className="flex gap-2 mt-1 ml-14">
-          <span className="text-xs text-slate-500">{entry.data.company}</span>
+      {entry.data && (entry.data.company || entry.data.fit_label) && (
+        <div className="flex gap-2 mt-0.5 ml-14">
+          {entry.data.company  && <span className="text-xs text-slate-500">{entry.data.company}</span>}
           {entry.data.fit_label && <span className={`text-xs ${FIT_COLORS[entry.data.fit_label] || 'text-slate-400'}`}>{entry.data.fit_label}</span>}
-          {entry.data.score && <span className="text-xs text-slate-500">score: {entry.data.score}</span>}
+          {entry.data.score    && <span className="text-xs text-slate-600">score: {entry.data.score}</span>}
         </div>
       )}
     </div>
@@ -79,7 +93,7 @@ export default function Dashboard() {
         const weekRows  = rows.filter(r => new Date(r.timestamp) >= weekAgo)
         setTodayCount(todayRows.length)
         setWeekCount(weekRows.length)
-        const submitted = rows.filter(r => r.status === 'submitted').length
+        const submitted = rows.filter(r => r.status === 'submitted' || r.status === 'submitted_manually').length
         setSuccessRate(rows.length > 0 ? Math.round((submitted / rows.length) * 100) : 0)
       })
       .catch(() => {})
@@ -194,18 +208,29 @@ export default function Dashboard() {
       </div>
 
       {/* Progress bar */}
-      {(isRunning || isPaused) && botStatus.jobs_total > 0 && (
-        <div className="bg-[#1a1d27] border border-[#2a2d3e] rounded-xl p-4">
-          <div className="flex justify-between text-sm mb-2">
+      {(isRunning || isPaused) && (
+        <div className="bg-[#1a1d27] border border-[#2a2d3e] rounded-xl p-4 space-y-3">
+          <div className="flex justify-between text-sm">
             <span className="text-slate-400 flex items-center gap-2">
               <Loader size={14} className={isRunning ? 'animate-spin text-primary' : 'text-slate-500'} />
-              {isPaused ? 'Paused' : 'Running'}
+              {botStatus.current_job
+                ? `${isPaused ? 'Paused' : 'Running'}: ${botStatus.current_job.company} — ${botStatus.current_job.title}`
+                : isPaused ? 'Paused' : 'Running'}
             </span>
-            <span className="text-slate-400">{botStatus.jobs_applied} / {botStatus.jobs_total} jobs</span>
+            {botStatus.jobs_total > 0 && (
+              <span className="text-slate-400">{botStatus.jobs_applied} / {botStatus.jobs_total} jobs</span>
+            )}
           </div>
-          <div className="w-full bg-[#0f1117] rounded-full h-2">
-            <div className="bg-primary rounded-full h-2 transition-all"
-              style={{ width: `${Math.min(100, (botStatus.jobs_applied / botStatus.jobs_total) * 100)}%` }} />
+          {botStatus.jobs_total > 0 && (
+            <div className="w-full bg-[#0f1117] rounded-full h-2">
+              <div className="bg-primary rounded-full h-2 transition-all"
+                style={{ width: `${Math.min(100, (botStatus.jobs_applied / botStatus.jobs_total) * 100)}%` }} />
+            </div>
+          )}
+          <div className="flex gap-4 text-xs">
+            <span className="text-green-400">✓ {botStatus.session_submitted ?? 0} submitted</span>
+            <span className="text-red-400">✗ {botStatus.session_failed ?? 0} failed</span>
+            <span className="text-yellow-400">⚠ {botStatus.session_errors ?? 0} errors</span>
           </div>
         </div>
       )}

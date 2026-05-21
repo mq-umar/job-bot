@@ -17,10 +17,10 @@ class StartConfig(BaseModel):
     profile: str = "muhammad"
     mode: str = "auto"          # auto | review
     limit: int = 25
-    discover: bool = False
+    discover: bool = True
     companies_only: bool = False
     tier_max: int = 4
-    min_score: float = 0.05
+    min_score: float = 0.0
     dry_run: bool = False
     start_id: int = 1
     job_id: Optional[int] = None

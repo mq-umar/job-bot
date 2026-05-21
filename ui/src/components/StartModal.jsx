@@ -6,8 +6,8 @@ export default function StartModal({ onClose, onStart }) {
   const [profiles, setProfiles] = useState([])
   const [cfg, setCfg] = useState({
     profile: 'muhammad', mode: 'auto', limit: 25,
-    discover: false, companies_only: false, tier_max: 4,
-    min_score: 0.05, dry_run: false,
+    discover: true, companies_only: false, tier_max: 4,
+    min_score: 0, dry_run: false, start_id: 1,
   })
 
   useEffect(() => {
@@ -87,6 +87,31 @@ export default function StartModal({ onClose, onStart }) {
               <label>Min score threshold</label><span className="text-slate-300 font-medium">{fitLabel}</span>
             </div>
             <input type="range" min={0} max={0.45} step={0.05} value={cfg.min_score} onChange={e => set('min_score', +e.target.value)}
+              className="w-full accent-primary" />
+          </div>
+
+          {/* Tier max — only relevant when discover is on */}
+          {cfg.discover && (
+            <div>
+              <label className="block text-xs text-slate-400 mb-1.5">Discovery depth</label>
+              <div className="flex gap-2 flex-wrap">
+                {[[1,'Companies'],[2,'+Indeed'],[3,'+LinkedIn'],[4,'All sources']].map(([v, l]) => (
+                  <button key={v} onClick={() => set('tier_max', v)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${cfg.tier_max === v ? 'bg-primary text-white' : 'bg-[#0f1117] border border-[#2a2d3e] text-slate-400 hover:text-slate-100'}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Start ID (advanced) */}
+          <div>
+            <div className="flex justify-between text-xs text-slate-400 mb-1.5">
+              <label>Skip job IDs below</label>
+              <span className="text-slate-300 font-medium">#{cfg.start_id}</span>
+            </div>
+            <input type="range" min={1} max={500} step={1} value={cfg.start_id} onChange={e => set('start_id', +e.target.value)}
               className="w-full accent-primary" />
           </div>
         </div>

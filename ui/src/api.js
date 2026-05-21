@@ -35,7 +35,13 @@ export const api = {
 
   // Jobs
   getQueue:   ()       => req('GET',  '/jobs/queue'),
-  getHistory: (p)      => req('GET',  '/jobs/history' + (p ? `?profile=${p}` : '')),
+  getHistory: (p, status) => {
+    const params = new URLSearchParams()
+    if (p)      params.set('profile', p)
+    if (status) params.set('status', status)
+    const qs = params.toString()
+    return req('GET', '/jobs/history' + (qs ? `?${qs}` : ''))
+  },
   addJob:     (b)      => req('POST', '/jobs/add', b),
   deleteJob:  (id)     => req('DELETE',`/jobs/${id}`),
   getStats:   (p)      => req('GET',  '/jobs/stats' + (p ? `?profile=${p}` : '')),

@@ -151,11 +151,18 @@ def detect_platform(url: str) -> str:
     url = url.lower()
     if "greenhouse.io"    in url: return "greenhouse"
     if "lever.co"         in url: return "lever"
+    if "myworkdayjobs.com" in url or "wd1.myworkdayjobs" in url or "wd3.myworkdayjobs" in url: return "workday"
     if "workday"          in url: return "workday"
     if "ashbyhq.com"      in url: return "ashby"
     if "icims.com"        in url: return "icims"
     if "taleo"            in url: return "taleo"
     if "smartrecruiters"  in url: return "smartrecruiters"
+    if "successfactors.com" in url or "sap.com/successfactors" in url: return "successfactors"
+    if "jobvite.com"      in url: return "jobvite"
+    if "bamboohr.com"     in url: return "bamboohr"
+    if "ultipro.com"      in url or "ukg.com" in url: return "generic"
+    if "recruiterbox.com" in url: return "generic"
+    if "paylocity.com"    in url: return "generic"
     if "linkedin.com"     in url: return "linkedin"
     if "indeed.com"       in url: return "indeed"
     return "generic"
@@ -410,6 +417,41 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
     if _is_cover_letter_label(label_lower):
         return get_cover_letter(title, company, resume_name, profile_name, matched_keywords)
 
+    # Work experience / current role
+    if any(x in label_lower for x in ["current employer", "current company",
+                                       "company name", "employer name", "organization"]):
+        return p.get("current_employer", p.get("employer", "Tony's Tacos"))
+    if any(x in label_lower for x in ["current title", "current job title",
+                                       "job title", "position title", "current position",
+                                       "your title", "role title"]):
+        return p.get("current_title", p.get("title", "IT Supervisor"))
+    if any(x in label_lower for x in ["years of experience", "years experience",
+                                       "how many years", "years in", "experience years",
+                                       "relevant experience"]):
+        return p.get("years_experience", "3")
+    if any(x in label_lower for x in ["notice period", "start date",
+                                       "when can you start", "available to start",
+                                       "earliest start", "available from"]):
+        return p.get("notice_period", "2 weeks")
+    if any(x in label_lower for x in ["willing to relocate", "open to relocation",
+                                       "can you relocate", "relocation"]):
+        return p.get("willing_to_relocate", "No")
+    if any(x in label_lower for x in ["remote", "work from home", "work remotely",
+                                       "work location preference", "work arrangement"]):
+        return p.get("remote_preference", "Open to remote")
+    if any(x in label_lower for x in ["18 years", "18+", "over 18", "at least 18",
+                                       "legal age", "legal working age"]):
+        return "Yes"
+    if any(x in label_lower for x in ["currently employed", "are you employed",
+                                       "current employment", "employment status"]):
+        return "Yes"
+    if any(x in label_lower for x in ["hear about", "learned about", "how did you",
+                                       "where did you", "find out about", "source of"]):
+        return "LinkedIn"
+    if any(x in label_lower for x in ["desired salary", "expected salary",
+                                       "salary expectation", "salary requirement"]):
+        return str(p.get("salary_number", 75000))
+
     return None
 
 
@@ -626,6 +668,15 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
             if value is None:
                 log.append({"field": label_text, "status": "skipped", "note": "field not found: no match"})
                 continue
+
+            # Format date values for date inputs
+            input_type = (el.get_attribute("type") or "text").lower()
+            if input_type == "date" and value:
+                # Try to parse graduation date to YYYY-MM-DD
+                import re as _re
+                m = _re.search(r'(\d{4})', str(value))
+                if m:
+                    value = f"{m.group(1)}-05-01"  # default to May 1
 
             el.click(); el.fill(str(value)); human_delay(0.2, 0.5)
             log.append({"field": label_text, "status": "filled",
@@ -1221,6 +1272,176 @@ def fill_indeed_easy_apply(page, context, profile: dict, profile_name: str,
 
 # ── LinkedIn apply handler ────────────────────────────────────────────────────
 
+def _li_advance_step(page) -> bool:
+    """
+    Click the Next / Continue / Review / Submit button inside the LinkedIn
+    Easy Apply modal.  Returns True if a button was clicked.
+
+    Prefer aria-label (most stable) then text fallbacks.
+    Never waits for networkidle — just a fixed short pause so the DOM
+    can re-render the next step.
+    """
+    # Submit is handled by the caller; never click it here
+    candidates = [
+        # aria-label (most reliable — LinkedIn sets these)
+        "button[aria-label='Continue to next step']",
+        "button[aria-label='Review your application']",
+        # text-based fallbacks (scoped inside modal)
+        "[role='dialog'] button:has-text('Next')",
+        "[role='dialog'] button:has-text('Continue')",
+        "[role='dialog'] button:has-text('Review')",
+        "[role='dialog'] button:has-text('Review your application')",
+        ".artdeco-modal button:has-text('Next')",
+        ".artdeco-modal button:has-text('Continue')",
+        ".artdeco-modal button:has-text('Review')",
+        ".jobs-easy-apply-modal button:has-text('Next')",
+        ".jobs-easy-apply-modal button:has-text('Continue')",
+        ".jobs-easy-apply-modal button:has-text('Review')",
+        # broad fallback (last resort)
+        "button:has-text('Next')",
+        "button:has-text('Continue')",
+        "button:has-text('Review')",
+    ]
+    for sel in candidates:
+        try:
+            btn = page.locator(sel).first
+            if btn.is_visible(timeout=600):
+                label = btn.get_attribute("aria-label") or btn.inner_text(timeout=300)
+                btn.click()
+                page.wait_for_timeout(1500)   # let DOM re-render next step
+                print(f"  [LinkedIn] → clicked '{label.strip()}'")
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _li_resume_step(page, resume_pdf_path: str, log: list) -> bool:
+    """
+    Detect and handle the LinkedIn Easy Apply resume selection step.
+
+    Strategy (in order):
+    1. Click 'Upload resume' → file chooser → set our PDF (highest accuracy)
+    2. Select matching radio button by filename similarity
+    3. Leave as-is (account default already selected)
+
+    Returns True if we did something, False if not on a resume step.
+    """
+    resume_name = Path(resume_pdf_path).name
+    resume_stem = Path(resume_pdf_path).stem.lower()[:20]
+
+    # Detect whether we're on the resume step at all
+    on_resume_step = False
+    for sel in [
+        ".jobs-resume-picker", "[class*='resume-picker']",
+        "h3:has-text('Resume')", "h2:has-text('Resume')",
+        "button:has-text('Upload resume')",
+    ]:
+        try:
+            if page.locator(sel).first.is_visible(timeout=600):
+                on_resume_step = True
+                break
+        except Exception:
+            pass
+
+    if not on_resume_step:
+        # Also fall back: visible file input = resume step
+        try:
+            if page.locator("input[type='file']").first.is_visible(timeout=400):
+                on_resume_step = True
+        except Exception:
+            pass
+
+    if not on_resume_step:
+        return False
+
+    print("  [LinkedIn] Resume step detected — uploading PDF")
+
+    # Strategy 1: 'Upload resume' button → file chooser
+    for btn_sel in [
+        "button:has-text('Upload resume')",
+        "button:has-text('Upload a resume')",
+        "button:has-text('Upload')",
+        "[aria-label*='upload' i]",
+        "label:has-text('Upload resume')",
+    ]:
+        try:
+            btn = page.locator(btn_sel).first
+            if btn.is_visible(timeout=800):
+                with page.expect_file_chooser(timeout=5000) as fc_info:
+                    btn.click()
+                fc_info.value.set_files(resume_pdf_path)
+                time.sleep(1.0)
+                log.append({"field": "_meta_resume_replaced", "status": "yes",
+                             "value": "li_upload_button"})
+                print(f"  Resume uploaded (LinkedIn): {resume_name}")
+                return True
+        except Exception:
+            pass
+
+    # Strategy 2: radio button matching filename
+    for radio_sel in [
+        ".jobs-resume-picker__resume input[type='radio']",
+        "[class*='resume'] input[type='radio']",
+        "input[type='radio'][name*='resume']",
+        "input[type='radio']",
+    ]:
+        try:
+            radios = page.locator(radio_sel).all()
+            if not radios:
+                continue
+            for radio in radios:
+                try:
+                    # Walk up to find a label/container with the filename
+                    container = radio.locator("xpath=ancestor::li[1]")
+                    text = container.inner_text(timeout=500).lower()
+                    # Match by stem of our resume filename
+                    if resume_stem[:10] in text or ".pdf" in text:
+                        if not radio.is_checked(timeout=300):
+                            radio.click()
+                            time.sleep(0.5)
+                        log.append({"field": "_meta_resume_replaced", "status": "yes",
+                                     "value": "li_radio_selected"})
+                        print(f"  Resume radio selected (LinkedIn): {text[:60]}")
+                        return True
+                except Exception:
+                    pass
+            # If no stem match, select first PDF radio
+            for radio in radios:
+                try:
+                    container = radio.locator("xpath=ancestor::li[1]")
+                    text = container.inner_text(timeout=500).lower()
+                    if ".pdf" in text and not radio.is_checked(timeout=300):
+                        radio.click()
+                        time.sleep(0.5)
+                        log.append({"field": "_meta_resume_replaced", "status": "yes",
+                                     "value": "li_radio_first_pdf"})
+                        print(f"  Resume radio (first PDF): {text[:60]}")
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Strategy 3: direct file input
+    try:
+        fi = page.locator("input[type='file']").first
+        if fi.count() > 0:
+            fi.set_input_files(resume_pdf_path)
+            time.sleep(0.5)
+            log.append({"field": "_meta_resume_replaced", "status": "yes",
+                         "value": "li_file_input"})
+            print(f"  Resume set via file input (LinkedIn): {resume_name}")
+            return True
+    except Exception:
+        pass
+
+    print("  [LinkedIn] Resume step: could not upload — using account default")
+    log.append({"field": "_meta_resume_replaced", "status": "no",
+                 "value": "li_default_used"})
+    return True  # still on resume step, just didn't replace
+
+
 def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
                            resume_pdf_path: str, log: list,
                            company: str = "", title: str = "") -> tuple:
@@ -1256,69 +1477,61 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
         except Exception:
             return "no_button", None
 
-        try:
-            page.wait_for_selector(
-                ".jobs-easy-apply-modal, [data-test-modal], [role='dialog']",
-                timeout=10000,
-            )
-        except Exception:
-            pass
+        # Wait for the Easy Apply modal to appear
+        for modal_sel in [
+            ".jobs-easy-apply-modal",
+            "[data-test-modal]",
+            ".artdeco-modal",
+            "[role='dialog']",
+        ]:
+            try:
+                page.wait_for_selector(modal_sel, timeout=8000)
+                break
+            except Exception:
+                pass
         human_delay(1, 1.5)
 
-        for _step in range(15):
+        for _step in range(20):
+            human_delay(0.6, 1.0)
+
             if detect_recaptcha(page):
                 print("\n  [CAPTCHA] reCAPTCHA — solve then press Enter...")
                 input("  > ")
 
-            try:
-                fi = page.locator("input[type='file']").first
-                if fi.is_visible(timeout=500):
-                    replace_linkedin_resume(page, resume_pdf_path, log)
-                    human_delay(1, 2)
-            except Exception:
-                pass
+            # ── Check for submit / final review page ──────────────────────────
+            for sub_sel in [
+                "button[aria-label='Submit application']",
+                "button:has-text('Submit application')",
+                "button:has-text('Submit Application')",
+            ]:
+                try:
+                    sub = page.locator(sub_sel).first
+                    if sub.is_visible(timeout=500):
+                        print(f"  [LinkedIn] Submit button visible — step {_step + 1}")
+                        return "easy_apply", page
+                except Exception:
+                    pass
 
+            # ── Resume step: upload/select our PDF ────────────────────────────
+            _li_resume_step(page, resume_pdf_path, log)
+
+            # ── Fill any other visible form fields on this step ───────────────
             _scan_and_fill(page, profile, profile_name, resume_name,
                            log, company, title)
 
-            # Submit button visible → final step reached
-            try:
-                sub = page.locator(
-                    "button:has-text('Submit application'), "
-                    "button:has-text('Submit Application')"
-                ).first
-                if sub.is_visible(timeout=500):
-                    print("  [LinkedIn] Reached submit step")
-                    return "easy_apply", page
-            except Exception:
-                pass
-
-            # Advance to next step
-            advanced = False
-            for btn_text in ["Next", "Continue", "Review"]:
-                try:
-                    nav = page.locator(f"button:has-text('{btn_text}')").last
-                    if nav.is_visible(timeout=1000):
-                        nav.click()
-                        try:
-                            page.wait_for_load_state("networkidle", timeout=4000)
-                        except Exception:
-                            pass
-                        human_delay(1, 1.5)
-                        advanced = True
-                        break
-                except Exception:
-                    pass
-            if not advanced:
+            # ── Advance to next step ──────────────────────────────────────────
+            if not _li_advance_step(page):
+                # Could not find any advance button — check once more for submit
                 try:
                     sub = page.locator(
-                        "button:has-text('Submit application'), "
-                        "button:has-text('Submit Application')"
+                        "button[aria-label='Submit application'], "
+                        "button:has-text('Submit application')"
                     ).first
                     if sub.is_visible(timeout=1000):
                         return "easy_apply", page
                 except Exception:
                     pass
+                print(f"  [LinkedIn] No advance button on step {_step + 1} — stopping")
                 break
 
         return "easy_apply", page
@@ -1750,9 +1963,139 @@ def _fill_generic(page, profile: dict, profile_name: str,
                   company: str = "", title: str = ""):
     human_delay(1, 2)
     resume_name = Path(resume_pdf_path).name
-    _fill_location(page, profile, log)
-    _upload_resume(page, resume_pdf_path, log)
-    _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
+
+    for _step in range(10):
+        dismiss_popups(page)
+        _fill_location(page, profile, log)
+        _upload_resume(page, resume_pdf_path, log)
+        _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
+
+        # Stop if submit button found
+        sub = find_submit_button(page, "generic")
+        if sub is not None:
+            label = (sub.inner_text(timeout=300) or "").strip().lower()
+            if any(t in label for t in ["submit", "apply", "send", "complete", "finish"]):
+                return
+
+        # Try to advance to next step
+        advanced = False
+        for sel in [
+            "button:has-text('Next')", "button:has-text('Continue')",
+            "button:has-text('Next step')", "button:has-text('Save and continue')",
+            "button:has-text('Save & continue')", "button:has-text('Proceed')",
+            "a:has-text('Next')", "input[type='submit'][value*='Next']",
+        ]:
+            try:
+                btn = page.locator(sel).last
+                if btn.is_visible(timeout=700):
+                    label = (btn.inner_text(timeout=300) or btn.get_attribute("value") or "").strip().lower()
+                    if any(t in label for t in ["submit", "apply", "send", "complete"]):
+                        return  # let caller submit
+                    btn.click()
+                    human_delay(2.0, 3.5)
+                    advanced = True
+                    break
+            except Exception:
+                pass
+        if not advanced:
+            break
+
+
+# ── SmartRecruiters handler ───────────────────────────────────────────────────
+
+def _fill_smartrecruiters(page, profile: dict, profile_name: str,
+                          resume_pdf_path: str, log: list,
+                          company: str = "", title: str = ""):
+    """Fill SmartRecruiters application form."""
+    human_delay(1, 2)
+    resume_name = Path(resume_pdf_path).name
+
+    for _step in range(8):
+        dismiss_popups(page)
+        _upload_resume(page, resume_pdf_path, log)
+        _fill_location(page, profile, log)
+        _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
+
+        # Check for submit
+        for sub_sel in [
+            "button[data-label='Submit Application']",
+            "[data-testid='btn-apply']",
+            "button.wui-btn--primary:has-text('Submit')",
+            "button:has-text('Submit Application')",
+        ]:
+            try:
+                sub = page.locator(sub_sel).first
+                if sub.is_visible(timeout=400):
+                    return
+            except Exception:
+                pass
+
+        advanced = False
+        for sel in ["button:has-text('Next')", "button:has-text('Continue')",
+                    "button[data-ui='next']", "button.wui-btn:has-text('Next')"]:
+            try:
+                btn = page.locator(sel).last
+                if btn.is_visible(timeout=700):
+                    label = (btn.inner_text(timeout=300) or "").strip().lower()
+                    if any(t in label for t in ["submit", "apply"]):
+                        return
+                    btn.click()
+                    human_delay(2, 3)
+                    advanced = True
+                    break
+            except Exception:
+                pass
+        if not advanced:
+            break
+
+
+# ── Taleo handler ─────────────────────────────────────────────────────────────
+
+def _fill_taleo(page, profile: dict, profile_name: str,
+                resume_pdf_path: str, log: list,
+                company: str = "", title: str = ""):
+    """Fill Taleo multi-step application."""
+    human_delay(1.5, 2.5)
+    resume_name = Path(resume_pdf_path).name
+
+    for _step in range(10):
+        dismiss_popups(page)
+        _upload_resume(page, resume_pdf_path, log)
+        _fill_location(page, profile, log)
+        _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
+
+        for sub_sel in [
+            "input[type='submit'][value*='Submit']",
+            "button[class*='submit']", "a.btn:has-text('Submit')",
+        ]:
+            try:
+                sub = page.locator(sub_sel).first
+                if sub.is_visible(timeout=400):
+                    return
+            except Exception:
+                pass
+
+        advanced = False
+        for sel in [
+            "a:has-text('Next')", "button:has-text('Next')",
+            "input[type='button'][value*='Next']",
+            "input[type='submit'][value*='Next']",
+            "a:has-text('Continue')", "button:has-text('Continue')",
+        ]:
+            try:
+                btn = page.locator(sel).last
+                if btn.is_visible(timeout=700):
+                    label = (btn.inner_text(timeout=300) or btn.get_attribute("value") or "").strip().lower()
+                    if any(t in label for t in ["submit", "finish"]):
+                        return
+                    btn.click()
+                    human_delay(2.5, 4.0)  # Taleo is slow
+                    advanced = True
+                    break
+            except Exception:
+                pass
+        if not advanced:
+            break
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -1780,6 +2123,10 @@ def fill_form(page, platform: str, profile: dict, profile_name: str,
         _fill_ashby(page, profile, profile_name, resume_pdf_path, log, company, title)
     elif platform == "icims":
         _fill_icims(page, profile, profile_name, resume_pdf_path, log, company, title)
+    elif platform == "smartrecruiters":
+        _fill_smartrecruiters(page, profile, profile_name, resume_pdf_path, log, company, title)
+    elif platform == "taleo":
+        _fill_taleo(page, profile, profile_name, resume_pdf_path, log, company, title)
     elif platform == "linkedin":
         # Fallback only — primary LinkedIn path goes through handle_linkedin_apply()
         _fill_linkedin(page, profile, profile_name, resume_pdf_path, log, company, title)

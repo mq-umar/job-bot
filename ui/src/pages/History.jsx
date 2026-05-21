@@ -5,11 +5,12 @@ import { api } from '../api'
 import StatusBadge from '../components/StatusBadge'
 
 export default function History() {
-  const [history,  setHistory]  = useState([])
-  const [profile,  setProfile]  = useState('')
-  const [profiles, setProfiles] = useState([])
-  const [stats,    setStats]    = useState({})
-  const [chartData,setChartData]= useState([])
+  const [history,      setHistory]      = useState([])
+  const [profile,      setProfile]      = useState('')
+  const [profiles,     setProfiles]     = useState([])
+  const [stats,        setStats]        = useState({})
+  const [chartData,    setChartData]    = useState([])
+  const [statusFilter, setStatusFilter] = useState('')
 
   useEffect(() => {
     api.listProfiles().then(ps => {
@@ -19,7 +20,7 @@ export default function History() {
   }, [])
 
   useEffect(() => {
-    api.getHistory(profile || undefined).then(rows => {
+    api.getHistory(profile || undefined, statusFilter || undefined).then(rows => {
       setHistory(rows)
       // Build last-7-days chart
       const days = {}
@@ -36,7 +37,7 @@ export default function History() {
       })))
     }).catch(() => {})
     api.getStats(profile || undefined).then(setStats).catch(() => {})
-  }, [profile])
+  }, [profile, statusFilter])
 
   const exportCSV = () => {
     const header = Object.keys(history[0] || {}).join(',')
@@ -59,6 +60,19 @@ export default function History() {
             <option value="">All profiles</option>
             {profiles.map(p => <option key={p.name || p.first_name} value={p.name || p.first_name?.toLowerCase()}>{p.full_name || p.first_name}</option>)}
           </select>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+            className="bg-[#1a1d27] border border-[#2a2d3e] rounded-lg px-3 py-2 text-sm text-slate-300">
+            <option value="">All statuses</option>
+            <option value="submitted">Submitted</option>
+            <option value="submitted_manually">Submitted manually</option>
+            <option value="submit_failed">Submit failed</option>
+            <option value="error">Error</option>
+            <option value="button_not_found">Button not found</option>
+            <option value="dry_run">Dry run</option>
+            <option value="skipped_manual">Skipped (manual)</option>
+            <option value="skipped_low_fit">Skipped (low fit)</option>
+            <option value="closed">Closed</option>
+          </select>
           <button onClick={exportCSV} disabled={!history.length} className="flex items-center gap-2 px-4 py-2 border border-[#2a2d3e] text-slate-300 hover:text-slate-100 rounded-lg text-sm transition-colors disabled:opacity-40">
             <Download size={14} /> Export
           </button>
@@ -69,9 +83,9 @@ export default function History() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           ['Total', stats.total || 0, 'text-slate-100'],
-          ['Submitted', stats.by_status?.submitted || 0, 'text-success'],
+          ['Submitted', (stats.by_status?.submitted || 0) + (stats.by_status?.submitted_manually || 0), 'text-success'],
           ['Failed', (stats.by_status?.submit_failed || 0) + (stats.by_status?.error || 0), 'text-error'],
-          ['Skipped', stats.by_status?.skipped_manual || 0, 'text-slate-400'],
+          ['Skipped', (stats.by_status?.skipped_manual || 0) + (stats.by_status?.skipped_low_fit || 0), 'text-slate-400'],
         ].map(([l, v, c]) => (
           <div key={l} className="bg-[#1a1d27] border border-[#2a2d3e] rounded-xl p-4">
             <p className="text-xs text-slate-500 uppercase tracking-wide">{l}</p>
