@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from api.routers import bot, jobs, resumes, profiles, settings as settings_router
 from api.websocket import router as ws_router
@@ -35,7 +35,21 @@ app.include_router(profiles.router,        prefix="/api/profiles", tags=["profil
 app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"])
 app.include_router(ws_router)
 
-# Serve built React app (if exists)
+# Serve built React app (SPA routing — all unknown paths return index.html)
 _UI_DIST = Path(__file__).parent.parent / "ui" / "dist"
 if _UI_DIST.exists():
-    app.mount("/", StaticFiles(directory=str(_UI_DIST), html=True), name="ui")
+    _assets = _UI_DIST / "assets"
+    if _assets.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
+
+    @app.get("/")
+    async def serve_root():
+        return FileResponse(str(_UI_DIST / "index.html"))
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # Serve actual files that exist (favicons, manifests, etc.)
+        candidate = _UI_DIST / full_path
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_UI_DIST / "index.html"))

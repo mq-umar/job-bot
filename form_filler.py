@@ -867,6 +867,252 @@ def _fill_location(page, profile: dict, log: list):
                 pass
 
 
+# ── Page-ready helper ────────────────────────────────────────────────────────
+
+def wait_for_page_ready(page, timeout: int = 15000) -> None:
+    """Wait for networkidle, loading spinners to vanish, and JS to finish rendering."""
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout)
+    except Exception:
+        pass
+    for sel in [".loading", ".spinner", "[class*='loading']",
+                "[class*='skeleton']", "[aria-busy='true']"]:
+        try:
+            page.locator(sel).first.wait_for(state="hidden", timeout=2000)
+        except Exception:
+            pass
+    try:
+        page.wait_for_timeout(1500)
+    except Exception:
+        pass
+
+
+# ── Platform-specific apply button finders ───────────────────────────────────
+
+def find_linkedin_apply_button(page):
+    """
+    Try every known LinkedIn apply button selector.
+    Returns (element, 'easy_apply'|'external_apply') or (None, None).
+    """
+    easy_apply_selectors = [
+        "button[aria-label*='Easy Apply']",
+        "button[aria-label*='easy apply' i]",
+        "button[data-control-name='jobdetails_topcard_inapply']",
+        "button[data-job-id]",
+        ".jobs-apply-button",
+        ".jobs-apply-button--top-card",
+        "button.jobs-apply-button",
+        "button[class*='jobs-apply-button']",
+        ".jobs-s-apply button",
+        ".jobs-s-apply--top-card button",
+        "[class*='apply'] button",
+        ".job-details-jobs-unified-top-card__container--two-pane button",
+        ".jobs-unified-top-card__content--two-pane button",
+        "button:has-text('Easy Apply')",
+        "button:has-text('Apply now')",
+        ".jobs-details__main-content button",
+        ".jobs-search__job-details--wrapper button",
+        "main button",
+    ]
+    for sel in easy_apply_selectors:
+        try:
+            for el in page.locator(sel).all():
+                try:
+                    if el.is_visible(timeout=1000):
+                        text = el.inner_text().strip().lower()
+                        if any(w in text for w in ["easy apply", "apply now", "apply"]):
+                            print(f"  [BTN] LinkedIn Easy Apply: {sel}")
+                            return el, "easy_apply"
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    external_selectors = [
+        "a:has-text('Apply on company site')",
+        "a:has-text('Apply on company website')",
+        "a:has-text('Apply at')",
+        "a:has-text('Apply externally')",
+        "button:has-text('Apply on company site')",
+        "button:has-text('Apply on company website')",
+        "button:has-text('Apply externally')",
+        ".jobs-apply-button a",
+        "[data-tracking-control-name*='apply'] a",
+        "a[href*='apply']",
+    ]
+    for sel in external_selectors:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=1000):
+                print(f"  [BTN] LinkedIn External Apply: {sel}")
+                return el, "external_apply"
+        except Exception:
+            continue
+
+    # Scroll to top and retry with role-based search
+    try:
+        page.evaluate("window.scrollTo(0, 0)")
+        page.wait_for_timeout(1000)
+        for text in ["Easy Apply", "Apply now", "Apply on company site"]:
+            try:
+                el = page.get_by_role("button", name=text, exact=False).first
+                if el.is_visible(timeout=1000):
+                    btn_type = "easy_apply" if "easy" in text.lower() else "external_apply"
+                    print(f"  [BTN] LinkedIn role-search: '{text}'")
+                    return el, btn_type
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return None, None
+
+
+def find_indeed_apply_button(page):
+    """Try all Indeed apply button patterns. Returns (element, button_type) or (None, None)."""
+    selectors = [
+        "button[id='indeedApplyButton']",
+        "button.ia-continueButton",
+        "[data-testid='apply-button']",
+        "[class*='apply-button']",
+        ".jobsearch-IndeedApplyButton-newDesign button",
+        ".jobsearch-IndeedApplyButton button",
+        "button:has-text('Apply now')",
+        "button:has-text('Easily apply')",
+        "button:has-text('Apply on company site')",
+        "a:has-text('Apply on company site')",
+        "a[href*='/apply/']",
+        "a[href*='apply?']",
+        "[aria-label*='apply' i]",
+        "main button[type='button']",
+        ".jobsearch-ViewJobLayout button",
+    ]
+    for sel in selectors:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=1000):
+                text = el.inner_text().strip().lower()
+                if any(w in text for w in ["apply", "continue"]):
+                    is_ext = "company site" in text or "externally" in text
+                    btn_type = "external_apply" if is_ext else "easy_apply"
+                    print(f"  [BTN] Indeed {btn_type}: {sel}")
+                    return el, btn_type
+        except Exception:
+            continue
+    return None, None
+
+
+def find_greenhouse_apply_button(page):
+    """Try all Greenhouse apply button patterns. Returns (element, 'direct_form') or (None, None)."""
+    for sel in ["#apply_button", "a#apply_button",
+                "a:has-text('Apply for this job')", "button:has-text('Apply for this job')",
+                "a:has-text('Apply Now')", "button:has-text('Apply Now')",
+                "a:has-text('Apply')", ".apply-button", "[class*='apply']", "a[href*='/apply']"]:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=1000):
+                return el, "direct_form"
+        except Exception:
+            continue
+    return None, None
+
+
+def find_lever_apply_button(page):
+    """Try all Lever apply button patterns. Returns (element, 'direct_form') or (None, None)."""
+    for sel in ["a.postings-btn", "a:has-text('Apply for this job')",
+                ".posting-apply a", ".template-btn-submit",
+                "a:has-text('Apply')", "button:has-text('Apply')", "[class*='apply']"]:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=1000):
+                return el, "direct_form"
+        except Exception:
+            continue
+    return None, None
+
+
+def find_workday_apply_button(page):
+    """Try all Workday apply button patterns. Returns (element, 'direct_form') or (None, None)."""
+    for sel in ["a[data-automation-id='applyNowButton']",
+                "button[data-automation-id='applyNowButton']",
+                "[data-automation-id*='apply']", "button:has-text('Apply')",
+                "a:has-text('Apply')", "[class*='apply-button']"]:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=1000):
+                return el, "direct_form"
+        except Exception:
+            continue
+    return None, None
+
+
+def find_apply_button_generic(page):
+    """Last-resort detector: scans entire page for any apply button."""
+    for name_pat in ["Easy Apply", "Apply Now", "Apply for this job",
+                     "Apply on company site", "Apply", "Submit Application"]:
+        for role in ("button", "link"):
+            try:
+                el = page.get_by_role(role, name=name_pat, exact=False).first
+                if el.is_visible(timeout=1000):
+                    is_ext = "company site" in name_pat.lower()
+                    btn_type = "external_apply" if is_ext else "direct_form"
+                    print(f"  [BTN] Generic role='{role}' name='{name_pat}'")
+                    return el, btn_type
+            except Exception:
+                continue
+    try:
+        for btn in page.get_by_role("button").all()[:30]:
+            try:
+                if btn.is_visible(timeout=500):
+                    text = (btn.inner_text() + " " +
+                            (btn.get_attribute("aria-label") or "")).lower()
+                    if "apply" in text:
+                        print(f"  [BTN] Generic text-scan: '{text[:40]}'")
+                        return btn, "direct_form"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None, None
+
+
+def find_apply_button(page, platform: str, context=None):
+    """
+    Master apply-button finder: platform-specific first, then generic fallback.
+    Saves a full-page debug screenshot before returning (None, None).
+    """
+    from datetime import datetime as _dt
+    _finders = {
+        "linkedin":   find_linkedin_apply_button,
+        "indeed":     find_indeed_apply_button,
+        "greenhouse": find_greenhouse_apply_button,
+        "lever":      find_lever_apply_button,
+        "workday":    find_workday_apply_button,
+    }
+    print(f"  [BTN] Searching for apply button on {platform}...")
+    if platform in _finders:
+        el, bt = _finders[platform](page)
+        if el:
+            return el, bt
+        print(f"  [BTN] Platform handler found nothing — trying generic fallback")
+
+    el, bt = find_apply_button_generic(page)
+    if el:
+        return el, bt
+
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    scr_dir = Path(__file__).parent / "output" / "screenshots"
+    scr_dir.mkdir(parents=True, exist_ok=True)
+    scr_path = scr_dir / f"debug_no_button_{platform}_{ts}.png"
+    try:
+        page.screenshot(path=str(scr_path), full_page=True)
+        print(f"  [BTN] No apply button found after all strategies. "
+              f"Debug screenshot: {scr_path.name}")
+    except Exception as e:
+        print(f"  [BTN] No apply button found. Screenshot failed: {e}")
+    return None, None
+
+
 # ── Indeed Easy Apply handler ─────────────────────────────────────────────────
 
 def fill_indeed_easy_apply(page, context, profile: dict, profile_name: str,
@@ -880,100 +1126,97 @@ def fill_indeed_easy_apply(page, context, profile: dict, profile_name: str,
     human_delay(1.5, 2.5)
     resume_name = Path(resume_pdf_path).name
 
-    # Scenario A: Easy Apply / Apply now button opens a modal
-    for btn_text in ["Apply now", "Easy Apply", "Apply Now"]:
+    wait_for_page_ready(page)
+    btn, btn_type = find_indeed_apply_button(page)
+
+    if btn is None:
+        return "no_button"
+
+    if btn_type == "external_apply":
+        pages_before = len(context.pages)
         try:
-            btn = page.locator(f"button:has-text('{btn_text}'), a:has-text('{btn_text}')").first
-            if btn.is_visible(timeout=2000):
-                btn.click()
-                human_delay(1.5, 2.5)
-                # Check if modal opened (Indeed Easy Apply)
+            btn.scroll_into_view_if_needed(timeout=2000)
+            btn.click()
+            human_delay(2, 3)
+            if len(context.pages) > pages_before:
+                new_page = context.pages[-1]
                 try:
-                    page.wait_for_selector(
-                        "[aria-label='Apply to job'], .ia-BasePage, "
-                        "[data-testid='ia-view-root'], .ia-Questions",
-                        timeout=5000,
-                    )
-                    # Multi-step modal — iterate up to 20 steps
-                    for _step in range(20):
-                        if detect_recaptcha(page):
-                            print("\n  [CAPTCHA] Solve reCAPTCHA then press Enter...")
-                            input("  > ")
-
-                        # Replace resume on this step
-                        try:
-                            fi = page.locator("input[type='file']").first
-                            if fi.is_visible(timeout=1000):
-                                replace_indeed_resume(page, resume_pdf_path, log)
-                                human_delay(1, 2)
-                        except Exception:
-                            pass
-
-                        _scan_and_fill(page, profile, profile_name, resume_name,
-                                       log, company, title)
-
-                        # Submit button = final step reached
-                        try:
-                            sub = page.locator(
-                                "button:has-text('Submit your application'), "
-                                "button:has-text('Submit application')"
-                            ).first
-                            if sub.is_visible(timeout=1000):
-                                return "easy_apply"
-                        except Exception:
-                            pass
-
-                        # Advance step
-                        advanced = False
-                        for next_text in ["Continue", "Next", "Review your application",
-                                          "Review", "Next: Work experience"]:
-                            try:
-                                nav = page.locator(f"button:has-text('{next_text}')").last
-                                if nav.is_visible(timeout=1000):
-                                    nav.click()
-                                    # Wait for next step to render before filling
-                                    try:
-                                        page.wait_for_selector(
-                                            ".ia-BasePage, [data-testid='ia-view-root'],"
-                                            " .ia-Questions, [class*='ia-']",
-                                            timeout=5000,
-                                        )
-                                    except Exception:
-                                        pass
-                                    human_delay(1, 2)
-                                    advanced = True
-                                    break
-                            except Exception:
-                                pass
-                        if not advanced:
-                            break
-                    return "easy_apply"
-                except Exception:
-                    pass  # No modal — might have redirected or opened company site
-        except Exception:
-            pass
-
-    # Scenario B: Apply on company site → opens new tab
-    for sel_text in ["Apply on company site", "Apply on Company Site"]:
-        try:
-            btn = page.locator(
-                f"button:has-text('{sel_text}'), a:has-text('{sel_text}')"
-            ).first
-            if btn.is_visible(timeout=2000):
-                pages_before = len(context.pages)
-                btn.click()
-                human_delay(2, 3)
-                if len(context.pages) > pages_before:
-                    new_page = context.pages[-1]
                     new_page.wait_for_load_state("domcontentloaded", timeout=30000)
-                    human_delay(1.5, 2.5)
-                    log.append({"field": "indeed_apply_mode", "status": "filled",
-                                 "value": "company_site → new tab"})
-                    return "company_site"
+                except Exception:
+                    pass
+                human_delay(1.5, 2.5)
+                log.append({"field": "indeed_apply_mode", "status": "filled",
+                             "value": "company_site → new tab"})
+                return "company_site"
+        except Exception:
+            pass
+        return "no_button"
+
+    # easy_apply: click and navigate the multi-step modal
+    try:
+        btn.scroll_into_view_if_needed(timeout=2000)
+        btn.click()
+        human_delay(1.5, 2.5)
+    except Exception:
+        return "no_button"
+
+    try:
+        page.wait_for_selector(
+            "[aria-label='Apply to job'], .ia-BasePage, "
+            "[data-testid='ia-view-root'], .ia-Questions",
+            timeout=5000,
+        )
+    except Exception:
+        pass
+
+    for _step in range(20):
+        if detect_recaptcha(page):
+            print("\n  [CAPTCHA] Solve reCAPTCHA then press Enter...")
+            input("  > ")
+
+        try:
+            fi = page.locator("input[type='file']").first
+            if fi.is_visible(timeout=1000):
+                replace_indeed_resume(page, resume_pdf_path, log)
+                human_delay(1, 2)
         except Exception:
             pass
 
-    return "no_button"
+        _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
+
+        try:
+            sub = page.locator(
+                "button:has-text('Submit your application'), "
+                "button:has-text('Submit application')"
+            ).first
+            if sub.is_visible(timeout=1000):
+                return "easy_apply"
+        except Exception:
+            pass
+
+        advanced = False
+        for next_text in ["Continue", "Next", "Review your application",
+                          "Review", "Next: Work experience"]:
+            try:
+                nav = page.locator(f"button:has-text('{next_text}')").last
+                if nav.is_visible(timeout=1000):
+                    nav.click()
+                    try:
+                        page.wait_for_selector(
+                            ".ia-BasePage, [data-testid='ia-view-root'],"
+                            " .ia-Questions, [class*='ia-']",
+                            timeout=5000,
+                        )
+                    except Exception:
+                        pass
+                    human_delay(1, 2)
+                    advanced = True
+                    break
+            except Exception:
+                pass
+        if not advanced:
+            break
+    return "easy_apply"
 
 
 # ── LinkedIn apply handler ────────────────────────────────────────────────────
@@ -984,133 +1227,133 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
     """
     Handle a LinkedIn job page apply flow.
     Returns (method, redirect_page):
-      ("easy_apply", page)       — Easy Apply modal filled to submit step
-      ("company_site", new_page) — regular Apply opened a new/same tab
-      ("no_button", None)        — no apply button found
+      ("easy_apply", page)       — Easy Apply modal navigated to submit step
+      ("company_site", new_page) — Apply redirected to company site
+      ("no_button", None)        — no apply button found after exhaustive search
     """
     human_delay(1.5, 2.5)
     resume_name = Path(resume_pdf_path).name
 
-    # ── Easy Apply modal ──────────────────────────────────────────────────────
+    wait_for_page_ready(page)
+
+    # Check if already applied
     try:
-        easy_btn = page.locator("button:has-text('Easy Apply')").first
-        if easy_btn.is_visible(timeout=3000):
-            easy_btn.click()
+        if page.locator("text=Applied").is_visible(timeout=2000):
+            print("  [LinkedIn] Already applied to this job")
+            return "no_button", None
+    except Exception:
+        pass
+
+    btn, btn_type = find_linkedin_apply_button(page)
+
+    if btn is None:
+        return "no_button", None
+
+    if btn_type == "easy_apply":
+        try:
+            btn.scroll_into_view_if_needed(timeout=2000)
+            btn.click()
+        except Exception:
+            return "no_button", None
+
+        try:
+            page.wait_for_selector(
+                ".jobs-easy-apply-modal, [data-test-modal], [role='dialog']",
+                timeout=10000,
+            )
+        except Exception:
+            pass
+        human_delay(1, 1.5)
+
+        for _step in range(15):
+            if detect_recaptcha(page):
+                print("\n  [CAPTCHA] reCAPTCHA — solve then press Enter...")
+                input("  > ")
+
             try:
-                page.wait_for_selector(
-                    ".jobs-easy-apply-modal, [data-test-modal], [role='dialog']",
-                    timeout=10000,
-                )
+                fi = page.locator("input[type='file']").first
+                if fi.is_visible(timeout=500):
+                    replace_linkedin_resume(page, resume_pdf_path, log)
+                    human_delay(1, 2)
             except Exception:
                 pass
-            human_delay(1, 1.5)
 
-            for _step in range(15):
-                if detect_recaptcha(page):
-                    print("\n  [CAPTCHA] reCAPTCHA — solve then press Enter...")
-                    input("  > ")
+            _scan_and_fill(page, profile, profile_name, resume_name,
+                           log, company, title)
 
-                # Replace resume if file input visible on this step
+            # Submit button visible → final step reached
+            try:
+                sub = page.locator(
+                    "button:has-text('Submit application'), "
+                    "button:has-text('Submit Application')"
+                ).first
+                if sub.is_visible(timeout=500):
+                    print("  [LinkedIn] Reached submit step")
+                    return "easy_apply", page
+            except Exception:
+                pass
+
+            # Advance to next step
+            advanced = False
+            for btn_text in ["Next", "Continue", "Review"]:
                 try:
-                    fi = page.locator("input[type='file']").first
-                    if fi.is_visible(timeout=500):
-                        replace_linkedin_resume(page, resume_pdf_path, log)
-                        human_delay(1, 2)
+                    nav = page.locator(f"button:has-text('{btn_text}')").last
+                    if nav.is_visible(timeout=1000):
+                        nav.click()
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=4000)
+                        except Exception:
+                            pass
+                        human_delay(1, 1.5)
+                        advanced = True
+                        break
                 except Exception:
                     pass
-
-                _scan_and_fill(page, profile, profile_name, resume_name,
-                               log, company, title)
-
-                # Submit button visible → final step reached
+            if not advanced:
                 try:
                     sub = page.locator(
                         "button:has-text('Submit application'), "
                         "button:has-text('Submit Application')"
                     ).first
-                    if sub.is_visible(timeout=500):
-                        print(f"  [LinkedIn] Reached submit step")
+                    if sub.is_visible(timeout=1000):
                         return "easy_apply", page
                 except Exception:
                     pass
+                break
 
-                # Advance to next step
-                advanced = False
-                for btn_text in ["Next", "Continue", "Review"]:
-                    try:
-                        nav = page.locator(f"button:has-text('{btn_text}')").last
-                        if nav.is_visible(timeout=1000):
-                            nav.click()
-                            # Wait for next step content to load
-                            try:
-                                page.wait_for_load_state("networkidle", timeout=4000)
-                            except Exception:
-                                pass
-                            human_delay(1, 1.5)
-                            advanced = True
-                            break
-                    except Exception:
-                        pass
-                if not advanced:
-                    # One last check for submit
-                    try:
-                        sub = page.locator(
-                            "button:has-text('Submit application'), "
-                            "button:has-text('Submit Application')"
-                        ).first
-                        if sub.is_visible(timeout=1000):
-                            return "easy_apply", page
-                    except Exception:
-                        pass
-                    break
+        return "easy_apply", page
 
-            # Return easy_apply — _finish_job will click submit while modal is still open
-            return "easy_apply", page
-    except Exception:
-        pass
-
-    # ── Regular Apply → new tab or same-tab redirect ──────────────────────────
-    for btn_sel in [
-        "button.jobs-apply-button",
-        "a.jobs-apply-button",
-        "button:has-text('Apply now')",
-        "button:has-text('Apply')",
-        "a:has-text('Apply on company website')",
-    ]:
+    else:  # external_apply
+        pages_before = len(context.pages)
+        url_before   = page.url
         try:
-            btn = page.locator(btn_sel).first
-            if not btn.is_visible(timeout=2000):
-                continue
-            pages_before = len(context.pages)
-            url_before   = page.url
+            btn.scroll_into_view_if_needed(timeout=2000)
             btn.click()
             human_delay(2, 3)
-
-            # New tab?
-            if len(context.pages) > pages_before:
-                new_page = context.pages[-1]
-                try:
-                    new_page.wait_for_load_state("domcontentloaded", timeout=30000)
-                except Exception:
-                    pass
-                human_delay(1.5, 2.5)
-                log.append({"field": "linkedin_apply_mode", "status": "filled",
-                            "value": "company_site → new tab"})
-                return "company_site", new_page
-
-            # Same-tab redirect?
-            if page.url != url_before:
-                try:
-                    page.wait_for_load_state("domcontentloaded", timeout=30000)
-                except Exception:
-                    pass
-                log.append({"field": "linkedin_apply_mode", "status": "filled",
-                            "value": "company_site → same tab"})
-                return "company_site", page
         except Exception:
-            pass
+            return "no_button", None
 
-    return "no_button", None
+        if len(context.pages) > pages_before:
+            new_page = context.pages[-1]
+            try:
+                new_page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+            human_delay(1.5, 2.5)
+            log.append({"field": "linkedin_apply_mode", "status": "filled",
+                        "value": "company_site → new tab"})
+            return "company_site", new_page
+
+        if page.url != url_before:
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+            log.append({"field": "linkedin_apply_mode", "status": "filled",
+                        "value": "company_site → same tab"})
+            return "company_site", page
+
+        return "no_button", None
 
 
 # ── Submit helpers ────────────────────────────────────────────────────────────

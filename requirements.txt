@@ -1,5 +1,4 @@
 playwright>=1.44.0
-playwright-stealth>=1.0.6
 pandas>=2.2.0
 rich>=13.7.0
 scikit-learn>=1.4.0

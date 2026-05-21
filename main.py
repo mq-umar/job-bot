@@ -17,8 +17,8 @@ Flags:
   --review     : show each job, ask y/n/q before submitting
   --limit N    : max jobs per session (default: 50)
   --dry-run    : score + log everything, never actually submit
-  --min-score  : skip if score < this AND fit label is Low Fit (default: 0.05)
-                 set to 0.0 to disable entirely
+  --min-score  : skip if score < this AND fit label is Low Fit (default: 0.0 = off)
+                 set above 0 to enable (e.g. 0.05)
 """
 import argparse
 import csv
@@ -33,7 +33,6 @@ from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 import pandas as pd
 from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -194,6 +193,7 @@ _STATUS_STYLES = {
     "ALREADY_APPLIED": "[dim]",
     "SUBMIT_FAILED":   "[bold red]",
     "DRY_RUN":         "[cyan]",
+    "MANUAL_NEEDED":   "[bold yellow]",
 }
 
 def print_status(tag: str, detail: str = ""):
@@ -514,11 +514,11 @@ def process_job(page, context, row: dict, row_num: int,
                     score, fit, keywords, dry_run, review,
                 )
 
-            else:  # no_button — no apply UI found on Indeed page
-                print_status("SKIPPED", "no apply button found on Indeed")
+            else:  # no_button — tried 15+ selectors, nothing clickable
+                print_status("MANUAL_NEEDED", "apply button not found on Indeed after exhaustive search")
                 log_result(profile_name, _make_entry(
-                    profile_name, row, "skipped_no_button", pdf_path,
-                    score, fit, keywords, notes="Indeed: no apply button found"))
+                    profile_name, row, "button_not_found", pdf_path,
+                    score, fit, keywords, notes="Indeed: button_not_found — debug screenshot saved"))
                 applied_urls.add(norm_url)
                 return "continue"
 
@@ -567,11 +567,11 @@ def process_job(page, context, row: dict, row_num: int,
                 apply_method="easy_apply",
             )
 
-        else:  # no_button — no apply UI found on LinkedIn page
-            print_status("SKIPPED", "no apply button found on LinkedIn")
+        else:  # no_button — tried 18+ selectors, nothing clickable
+            print_status("MANUAL_NEEDED", "apply button not found on LinkedIn after exhaustive search")
             log_result(profile_name, _make_entry(
-                profile_name, row, "skipped_no_button", pdf_path,
-                score, fit, keywords, notes="LinkedIn: no apply button found"))
+                profile_name, row, "button_not_found", pdf_path,
+                score, fit, keywords, notes="LinkedIn: button_not_found — debug screenshot saved"))
             applied_urls.add(norm_url)
             return "continue"
 
@@ -832,7 +832,7 @@ def main():
                         help="Max jobs per session (default: 50)")
     parser.add_argument("--dry-run",   action="store_true",
                         help="Score + log everything but never submit")
-    parser.add_argument("--min-score",      type=float, default=0.05,
+    parser.add_argument("--min-score",      type=float, default=0.0,
                         help="Skip if score < this AND Low Fit (0.0 disables)")
     parser.add_argument("--companies-only", action="store_true",
                         help="Only search Tier 1 company career pages (skip job boards)")
@@ -907,19 +907,27 @@ def main():
     browser_dir.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as p:
+        # Remove stale Chrome lock files from any previous unclean shutdown
+        for lf in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            (browser_dir / lf).unlink(missing_ok=True)
+
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(browser_dir),
             headless=False,
             channel="chrome",
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ],
+            ignore_default_args=["--enable-automation"],
             viewport={"width": 1440, "height": 900},
         )
-        try:
-            Stealth().use_sync(context)
-        except Exception:
-            pass
-
-        page         = context.new_page()
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        page = context.new_page()
         user_stopped = False
         jobs_run     = 0
 
@@ -987,7 +995,10 @@ def main():
             console.print("\n[yellow]Interrupted.[/yellow]")
         finally:
             input("\nPress Enter to close browser...")
-            context.close()
+            try:
+                context.close()
+            except Exception:
+                pass
 
     stats.print_summary()
     console.print(f"\n[bold green]Done.[/bold green]  "

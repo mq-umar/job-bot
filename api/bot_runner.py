@@ -173,7 +173,7 @@ def run_session(config: Dict) -> None:
     discover     = config.get("discover", False)
     companies_only = config.get("companies_only", False)
     tier_max     = config.get("tier_max", 4)
-    min_score    = config.get("min_score", 0.05)
+    min_score    = config.get("min_score", 0.0)
     start_id     = config.get("start_id", 1)
     job_id       = config.get("job_id", None)
 
@@ -190,12 +190,6 @@ def run_session(config: Dict) -> None:
         import time
         import pandas as pd
         from playwright.sync_api import sync_playwright
-
-        try:
-            from playwright_stealth import Stealth
-            _STEALTH = True
-        except ImportError:
-            _STEALTH = False
 
         from main import (
             load_profile, load_applied_urls, normalize_url,
@@ -231,19 +225,26 @@ def run_session(config: Dict) -> None:
         browser_dir.mkdir(parents=True, exist_ok=True)
 
         with sync_playwright() as p:
+            # Remove stale Chrome lock files from any previous unclean shutdown
+            for lf in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+                (browser_dir / lf).unlink(missing_ok=True)
+
             context = p.chromium.launch_persistent_context(
                 user_data_dir=str(browser_dir),
                 headless=False,
                 channel="chrome",
-                args=["--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
+                ignore_default_args=["--enable-automation"],
                 viewport={"width": 1440, "height": 900},
             )
-            if _STEALTH:
-                try:
-                    Stealth().use_sync(context)
-                except Exception:
-                    pass
-
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
             page = context.new_page()
 
             try:
