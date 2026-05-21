@@ -52,7 +52,7 @@ console = Console()
 BASE_DIR     = Path(__file__).parent
 OUTPUT_DIR   = BASE_DIR / "output"
 BROWSER_PROF = BASE_DIR / "browser_profile"
-MAX_JOB_SECS = 60
+MAX_JOB_SECS = 180  # 3 min — covers multi-step Workday/LinkedIn forms with CAPTCHA pauses
 
 # URL params stripped for deduplication
 _STRIP_PARAMS = {
@@ -504,7 +504,8 @@ def process_job(page, context, row: dict, row_num: int,
                 active_page = context.pages[-1]
                 platform    = detect_platform(active_page.url)
                 row["platform"] = platform
-                console.print(f"  New tab: [cyan]{platform}[/cyan]")
+                console.print(f"  Redirected to: [cyan]{platform}[/cyan]")
+                dismiss_popups(active_page)
 
             elif mode == "easy_apply":
                 return _finish_job(
@@ -512,6 +513,14 @@ def process_job(page, context, row: dict, row_num: int,
                     indeed_log, "indeed", applied_urls, stats, watchdog,
                     score, fit, keywords, dry_run, review,
                 )
+
+            else:  # no_button — no apply UI found on Indeed page
+                print_status("SKIPPED", "no apply button found on Indeed")
+                log_result(profile_name, _make_entry(
+                    profile_name, row, "skipped_no_button", pdf_path,
+                    score, fit, keywords, notes="Indeed: no apply button found"))
+                applied_urls.add(norm_url)
+                return "continue"
 
     # ── 4b. LinkedIn handling ─────────────────────────────────────────────────
     elif platform == "linkedin":
@@ -548,6 +557,7 @@ def process_job(page, context, row: dict, row_num: int,
             platform    = detect_platform(active_page.url)
             row["platform"] = platform
             console.print(f"  Redirected to: [cyan]{platform}[/cyan]")
+            dismiss_popups(active_page)
 
         elif mode == "easy_apply":
             return _finish_job(
@@ -556,7 +566,14 @@ def process_job(page, context, row: dict, row_num: int,
                 score, fit, keywords, dry_run, review,
                 apply_method="easy_apply",
             )
-        # mode == "no_button": fall through to generic form handling below
+
+        else:  # no_button — no apply UI found on LinkedIn page
+            print_status("SKIPPED", "no apply button found on LinkedIn")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_no_button", pdf_path,
+                score, fit, keywords, notes="LinkedIn: no apply button found"))
+            applied_urls.add(norm_url)
+            return "continue"
 
     # ── 5. JD + resume selection (non-LinkedIn/Indeed, or redirect fallthrough) ─
     if not pdf_path:

@@ -165,23 +165,53 @@ def detect_platform(url: str) -> str:
 
 def extract_job_description(page, platform: str) -> str:
     selectors = {
-        "greenhouse": ["#content", ".job-post__description", "[data-qa='job-description']", "section.content"],
-        "lever":      [".posting-requirements", ".section-wrapper", "[class*='description']"],
-        "indeed":     ["#jobDescriptionText", ".jobsearch-jobDescriptionText"],
-        "linkedin":   [".jobs-description__content", ".jobs-box__html-content"],
-        "generic":    ["[class*='description']", "[class*='job-details']", "main", "article", "#content"],
+        "greenhouse":      ["#content", ".job-post__description",
+                            "[data-qa='job-description']", "section.content",
+                            ".job__description"],
+        "lever":           [".posting-requirements", ".section-wrapper",
+                            "[class*='description']", ".posting-content"],
+        "workday":         ["[data-automation-id='job-description']",
+                            "[class*='rich-text-container']", "[class*='wd-text']",
+                            "section[class*='description']", "div[class*='jobPosting']"],
+        "ashby":           ["[class*='job-description']", "[class*='JobDescription']",
+                            "div[data-testid*='description']", "main"],
+        "icims":           [".iCIMS_JobContent", "[id*='description']",
+                            "[class*='job-description']"],
+        "taleo":           ["[id*='description']", "[class*='requisition']",
+                            "div.jobDescription"],
+        "smartrecruiters": [".job-description", "[data-ui='job-description']",
+                            "[class*='jobad-details']"],
+        "indeed":          ["#jobDescriptionText", ".jobsearch-jobDescriptionText",
+                            "[data-testid='jobsearch-JobComponent-description']"],
+        "linkedin":        [".jobs-description__content", ".jobs-box__html-content",
+                            ".job-view-layout .description__text",
+                            "[class*='jobs-description']", "article"],
+        "generic":         ["[class*='job-description']", "[class*='jobDescription']",
+                            "[class*='job-details']", "[class*='description']",
+                            "main", "article", "#content", "#main"],
     }
     for sel in selectors.get(platform, selectors["generic"]):
         try:
             el = page.query_selector(sel)
             if el:
                 text = el.inner_text()
-                if len(text) > 200:
-                    return text.strip()
+                if len(text) > 300:
+                    return text.strip()[:20000]
         except Exception:
             pass
+    # Generic fallback — try all generic selectors too
+    if platform != "generic":
+        for sel in selectors["generic"]:
+            try:
+                el = page.query_selector(sel)
+                if el:
+                    text = el.inner_text()
+                    if len(text) > 300:
+                        return text.strip()[:20000]
+            except Exception:
+                pass
     try:
-        return page.inner_text("body")[:12000]
+        return page.inner_text("body")[:20000]
     except Exception:
         return ""
 
@@ -682,6 +712,40 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
         except Exception:
             pass
 
+    # ── Checkboxes ────────────────────────────────────────────────────────────
+    for el in page.locator("input[type='checkbox']:visible").all():
+        try:
+            label_text  = _get_label(page, el)
+            if not label_text:
+                continue
+            label_lower = label_text.lower()
+
+            # Always tick agreement / consent / certification checkboxes
+            if any(t in label_lower for t in [
+                "agree", "terms", "privacy", "consent", "certify", "affirm",
+                "acknowledge", "confirm", "accept", "authorize", "authorise",
+                "above is true", "accurate", "correct", "i am", "i have read",
+            ]):
+                if not el.is_checked():
+                    el.click()
+                    human_delay(0.2, 0.4)
+                log.append({"field": label_text, "status": "filled",
+                             "value": "checked (agreement)"})
+                continue
+
+            value = _profile_value(label_lower, profile, profile_name,
+                                   resume_name, company, title)
+            if value is not None and str(value).lower() in ("yes", "true", "1"):
+                if not el.is_checked():
+                    el.click()
+                    human_delay(0.2, 0.4)
+                log.append({"field": label_text, "status": "filled", "value": "checked"})
+            else:
+                log.append({"field": label_text, "status": "skipped",
+                             "note": "checkbox: no match"})
+        except Exception as e:
+            log.append({"field": "checkbox", "status": "error", "note": str(e)[:80]})
+
 
 # ── Country autocomplete (Greenhouse-specific) ────────────────────────────────
 
@@ -867,7 +931,16 @@ def fill_indeed_easy_apply(page, context, profile: dict, profile_name: str,
                                 nav = page.locator(f"button:has-text('{next_text}')").last
                                 if nav.is_visible(timeout=1000):
                                     nav.click()
-                                    human_delay(1.5, 2.5)
+                                    # Wait for next step to render before filling
+                                    try:
+                                        page.wait_for_selector(
+                                            ".ia-BasePage, [data-testid='ia-view-root'],"
+                                            " .ia-Questions, [class*='ia-']",
+                                            timeout=5000,
+                                        )
+                                    except Exception:
+                                        pass
+                                    human_delay(1, 2)
                                     advanced = True
                                     break
                             except Exception:
@@ -968,7 +1041,12 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
                         nav = page.locator(f"button:has-text('{btn_text}')").last
                         if nav.is_visible(timeout=1000):
                             nav.click()
-                            human_delay(1, 2)
+                            # Wait for next step content to load
+                            try:
+                                page.wait_for_load_state("networkidle", timeout=4000)
+                            except Exception:
+                                pass
+                            human_delay(1, 1.5)
                             advanced = True
                             break
                     except Exception:
@@ -986,8 +1064,7 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
                         pass
                     break
 
-            # Return easy_apply even if we couldn't confirm the submit step —
-            # _finish_job will attempt click_submit and check for confirmation
+            # Return easy_apply — _finish_job will click submit while modal is still open
             return "easy_apply", page
     except Exception:
         pass
@@ -1039,17 +1116,61 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
 # ── Submit helpers ────────────────────────────────────────────────────────────
 
 def find_submit_button(page, platform: str):
-    """Return the submit button locator, or None."""
-    candidates = [
+    """Return the submit button locator, or None. Tries platform-specific selectors first."""
+    platform_map = {
+        "greenhouse":      ["[data-qa='btn-submit']", "[data-qa='submit-app-btn']",
+                            "button#submit_app", "button:has-text('Submit Application')"],
+        "lever":           [".template-btn-submit", "button[type='submit'].postings-btn",
+                            "a.template-btn-submit", "button:has-text('Submit Application')"],
+        "workday":         ["button[data-automation-id='bottomNavigationNextButton']",
+                            "button[data-automation-id*='submit']",
+                            "button[aria-label*='Submit']",
+                            "button:has-text('Submit')"],
+        "ashby":           ["button[type='submit']", "button:has-text('Submit Application')",
+                            "button[class*='ashby']:has-text('Submit')"],
+        "icims":           ["input.iCIMS_Button[value*='Submit']", "button.iCIMS_Button",
+                            ".iCIMS_FormElement input[type='submit']"],
+        "taleo":           ["input[type='submit'][value*='Submit']",
+                            "button[class*='submit']", "a.btn:has-text('Submit')"],
+        "smartrecruiters": ["button[data-label='Submit Application']",
+                            "[data-testid='btn-apply']",
+                            "button.wui-btn--primary:has-text('Submit')"],
+        "linkedin":        ["button:has-text('Submit application')",
+                            "button:has-text('Submit Application')"],
+        "indeed":          ["button:has-text('Submit your application')",
+                            "button:has-text('Submit application')",
+                            "button:has-text('Submit')"],
+    }
+    for sel in platform_map.get(platform, []):
+        try:
+            el = page.locator(sel).last
+            if el.is_visible():
+                return el
+        except Exception:
+            pass
+
+    # Universal fallback — ordered most to least specific
+    universal = [
         "button[type='submit']",
         "input[type='submit']",
         "button:has-text('Submit Application')",
         "button:has-text('Submit application')",
+        "button:has-text('Submit your application')",
         "button:has-text('Submit')",
+        "button:has-text('Complete Application')",
+        "button:has-text('Send Application')",
+        "button:has-text('Apply Now')",
+        "button:has-text('Apply now')",
         "[data-qa='btn-submit']",
-        "button:has-text('Apply')",
+        "[data-automation-id*='submit']",
+        "[class*='submit-btn']",
+        "[class*='btn-submit']",
+        "button[class*='primary']:has-text('Apply')",
+        "button[class*='primary']:has-text('Submit')",
+        "a[class*='button']:has-text('Submit')",
+        "a[class*='button']:has-text('Apply')",
     ]
-    for sel in candidates:
+    for sel in universal:
         try:
             el = page.locator(sel).last
             if el.is_visible():
@@ -1072,19 +1193,28 @@ CONFIRMATION_KEYWORDS = [
 
 
 def click_submit(page, platform: str) -> bool:
-    """Click the submit button. Returns True if button was found and clicked."""
-    btn = find_submit_button(page, platform)
-    if not btn:
-        return False
-    try:
-        btn.scroll_into_view_if_needed()
-        human_delay(0.5, 1.0)
-        btn.click()
-        human_delay(1.0, 1.5)  # short wait — caller does confirmation check
-        return True
-    except Exception as e:
-        print(f"  [ERROR] Submit click failed: {e}")
-        return False
+    """Click the submit button. Retries once on stale element or transient failure."""
+    for attempt in range(2):
+        btn = find_submit_button(page, platform)
+        if not btn:
+            if attempt == 0:
+                human_delay(1.5, 2.5)  # wait for dynamic rendering then retry
+                continue
+            return False
+        try:
+            btn.scroll_into_view_if_needed()
+            human_delay(0.5, 1.0)
+            btn.click()
+            human_delay(1.5, 2.0)
+            return True
+        except Exception as e:
+            if attempt == 0:
+                print(f"  [WARN] Submit click attempt 1 failed ({e}), retrying...")
+                human_delay(2, 3)
+            else:
+                print(f"  [ERROR] Submit click failed after retry: {e}")
+                return False
+    return False
 
 
 def wait_for_submission_confirmation(page, baseline_url: str,
@@ -1248,6 +1378,128 @@ def _fill_linkedin(page, profile: dict, profile_name: str,
     return False
 
 
+# ── Workday handler ───────────────────────────────────────────────────────────
+
+def _fill_workday(page, profile: dict, profile_name: str,
+                  resume_pdf_path: str, log: list,
+                  company: str = "", title: str = ""):
+    """Fill Workday multi-step application wizard."""
+    human_delay(1.5, 2.5)
+    resume_name = Path(resume_pdf_path).name
+
+    for _step in range(12):
+        dismiss_popups(page)
+
+        # Upload resume/CV when a file input appears on this step
+        try:
+            for fi in page.locator("input[type='file']").all():
+                if fi.is_visible(timeout=500):
+                    fi.set_input_files(resume_pdf_path)
+                    time.sleep(1.5)
+                    log.append({"field": "_meta_resume_replaced", "status": "yes",
+                                "value": "workday_file_input"})
+                    break
+        except Exception:
+            pass
+
+        _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
+
+        # Stop if submit button is the only navigation left
+        for sub_sel in [
+            "button[data-automation-id='bottomNavigationNextButton']",
+            "button[aria-label*='Submit']", "button:has-text('Submit')",
+        ]:
+            try:
+                sub = page.locator(sub_sel).last
+                if sub.is_visible(timeout=400):
+                    label = (sub.inner_text() or "").strip().lower()
+                    if any(t in label for t in ["submit", "done", "complete", "finish"]):
+                        return  # caller (_finish_job) will click
+            except Exception:
+                pass
+
+        # Advance to next step
+        advanced = False
+        for sel in [
+            "button[data-automation-id='bottomNavigationNextButton']",
+            "button:has-text('Next')", "button:has-text('Save and Continue')",
+            "button:has-text('Continue')", "button:has-text('Save')",
+        ]:
+            try:
+                btn = page.locator(sel).last
+                if btn.is_visible(timeout=1000):
+                    label = (btn.inner_text() or "").strip().lower()
+                    if any(t in label for t in ["submit", "done", "complete", "finish"]):
+                        return  # reached final step — let caller submit
+                    btn.click()
+                    human_delay(2.5, 4.0)  # Workday transitions are slow
+                    advanced = True
+                    break
+            except Exception:
+                pass
+        if not advanced:
+            break
+
+
+# ── Lever handler ─────────────────────────────────────────────────────────────
+
+def _fill_lever(page, profile: dict, profile_name: str,
+                resume_pdf_path: str, log: list,
+                company: str = "", title: str = ""):
+    """Fill Lever single-page application form."""
+    human_delay(1, 2)
+    resume_name = Path(resume_pdf_path).name
+    _upload_resume(page, resume_pdf_path, log)
+    _fill_location(page, profile, log)
+    _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
+
+
+# ── Ashby handler ─────────────────────────────────────────────────────────────
+
+def _fill_ashby(page, profile: dict, profile_name: str,
+                resume_pdf_path: str, log: list,
+                company: str = "", title: str = ""):
+    """Fill Ashby ATS application form."""
+    human_delay(1, 2)
+    resume_name = Path(resume_pdf_path).name
+    _upload_resume(page, resume_pdf_path, log)
+    _fill_location(page, profile, log)
+    _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
+
+
+# ── iCIMS handler ─────────────────────────────────────────────────────────────
+
+def _fill_icims(page, profile: dict, profile_name: str,
+                resume_pdf_path: str, log: list,
+                company: str = "", title: str = ""):
+    """Fill iCIMS multi-page application."""
+    human_delay(1, 2)
+    resume_name = Path(resume_pdf_path).name
+
+    for _step in range(8):
+        _upload_resume(page, resume_pdf_path, log)
+        _fill_location(page, profile, log)
+        _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
+
+        advanced = False
+        for sel in ["button:has-text('Next')", "button:has-text('Continue')",
+                    "input[type='button'][value*='Next']"]:
+            try:
+                btn = page.locator(sel).last
+                if btn.is_visible(timeout=1000):
+                    label = (btn.get_attribute("value") or btn.inner_text() or "").lower()
+                    if any(t in label for t in ["submit", "complete"]):
+                        return
+                    btn.click()
+                    human_delay(2, 3)
+                    advanced = True
+                    break
+            except Exception:
+                pass
+        if not advanced:
+            break
+
+
 # ── Generic handler ───────────────────────────────────────────────────────────
 
 def _fill_generic(page, profile: dict, profile_name: str,
@@ -1277,7 +1529,16 @@ def fill_form(page, platform: str, profile: dict, profile_name: str,
 
     if platform == "greenhouse":
         _fill_greenhouse(page, profile, profile_name, resume_pdf_path, log, company, title)
+    elif platform == "workday":
+        _fill_workday(page, profile, profile_name, resume_pdf_path, log, company, title)
+    elif platform == "lever":
+        _fill_lever(page, profile, profile_name, resume_pdf_path, log, company, title)
+    elif platform == "ashby":
+        _fill_ashby(page, profile, profile_name, resume_pdf_path, log, company, title)
+    elif platform == "icims":
+        _fill_icims(page, profile, profile_name, resume_pdf_path, log, company, title)
     elif platform == "linkedin":
+        # Fallback only — primary LinkedIn path goes through handle_linkedin_apply()
         _fill_linkedin(page, profile, profile_name, resume_pdf_path, log, company, title)
     else:
         _fill_generic(page, profile, profile_name, resume_pdf_path, log, company, title)
