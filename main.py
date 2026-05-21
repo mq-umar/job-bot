@@ -910,6 +910,7 @@ def main():
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(browser_dir),
             headless=False,
+            channel="chrome",
             args=["--disable-blink-features=AutomationControlled"],
             viewport={"width": 1440, "height": 900},
         )
