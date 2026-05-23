@@ -78,11 +78,32 @@ _COVER_TEMPLATE = (
     "high-quality work and I would welcome the opportunity to contribute to your team."
 )
 
+# Set by fill_form() before dispatching so _profile_value can pass jd_text to get_cover_letter
+# without threading it through every intermediate function signature.
+_FILL_CONTEXT: dict = {"jd_text": "", "profile": None}
+
 
 def get_cover_letter(title: str, company: str, resume_name: str, profile_name: str,
-                     matched_keywords=None) -> str:
+                     matched_keywords=None, profile: dict = None, jd_text: str = "") -> str:
+    # Try Claude AI generation first (backend-only, key never touches frontend)
+    if profile:
+        try:
+            from api.ai_writer import generate_cover_letter
+            ai_result = generate_cover_letter(
+                title=title,
+                company=company,
+                resume_name=resume_name,
+                profile=profile,
+                jd_text=jd_text,
+                matched_keywords=matched_keywords,
+            )
+            if ai_result:
+                return ai_result
+        except Exception:
+            pass
+
+    # Fall back to TF-IDF keyword template
     if matched_keywords:
-        # Use actual JD-matched terms for a more targeted cover letter
         kw_str = ", ".join(matched_keywords[:3]) or "technology and problem-solving"
         return (
             f"I am applying for the {title or 'this'} role at {company or 'your organization'}. "
@@ -409,7 +430,9 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
 
     # Cover letter / open-text interest question
     if _is_cover_letter_label(label_lower):
-        return get_cover_letter(title, company, resume_name, profile_name, matched_keywords)
+        return get_cover_letter(title, company, resume_name, profile_name, matched_keywords,
+                                profile=_FILL_CONTEXT.get("profile") or profile,
+                                jd_text=_FILL_CONTEXT.get("jd_text", ""))
 
     # Work experience / current role
     if any(x in label_lower for x in ["current employer", "current company",
@@ -491,7 +514,9 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
     if any(x in label_lower for x in ["tell us more", "anything else", "additional information",
                                        "additional comments", "please describe",
                                        "please explain", "elaborate"]):
-        return get_cover_letter(title, company, resume_name, profile_name, matched_keywords)
+        return get_cover_letter(title, company, resume_name, profile_name, matched_keywords,
+                                profile=_FILL_CONTEXT.get("profile") or profile,
+                                jd_text=_FILL_CONTEXT.get("jd_text", ""))
 
     return None
 
@@ -2863,11 +2888,13 @@ def _fill_taleo(page, profile: dict, profile_name: str,
 
 def fill_form(page, platform: str, profile: dict, profile_name: str,
               resume_pdf_path: str, company: str = "", title: str = "",
-              context=None) -> list:
+              context=None, jd_text: str = "") -> list:
     """
     Fill the application form for the detected platform.
     Returns a list of log dicts: {field, status, value?, note?}
     """
+    global _FILL_CONTEXT
+    _FILL_CONTEXT = {"jd_text": jd_text, "profile": profile}
     log = []
 
     if detect_recaptcha(page):

@@ -115,7 +115,7 @@ export default function History() {
 
       {/* Table */}
       <div className="bg-[#1a1d27] border border-[#2a2d3e] rounded-xl overflow-hidden overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="min-w-full text-sm">
           <thead>
             <tr className="border-b border-[#2a2d3e]">
               {['Time','Company','Title','Resume','Score','Fit','Status','Method',''].map(h => (
@@ -129,13 +129,13 @@ export default function History() {
               : history.slice(0, 200).map((r, i) => (
                 <tr key={i} className="hover:bg-white/5 transition-colors">
                   <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{(r.timestamp||'').slice(0,16)}</td>
-                  <td className="px-4 py-3 text-slate-200 font-medium whitespace-nowrap">{r.company||'—'}</td>
-                  <td className="px-4 py-3 text-slate-300 max-w-xs truncate">{r.title||'—'}</td>
-                  <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap truncate max-w-[140px]">{r.selected_resume||'—'}</td>
-                  <td className="px-4 py-3 text-slate-400 text-xs">{r.resume_score||'—'}</td>
-                  <td className="px-4 py-3"><StatusBadge type="fit" value={r.fit_label||'—'} /></td>
-                  <td className="px-4 py-3"><StatusBadge type="status" value={r.status||'—'} /></td>
-                  <td className="px-4 py-3 text-xs text-slate-500">{r.apply_method||'—'}</td>
+                  <td className="px-4 py-3 text-slate-200 font-medium whitespace-nowrap max-w-[160px] truncate">{r.company||'—'}</td>
+                  <td className="px-4 py-3 text-slate-300 max-w-[220px] truncate">{r.title||'—'}</td>
+                  <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap max-w-[140px] truncate">{(r.selected_resume||'—').replace(/\.pdf$/i,'')}</td>
+                  <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">{r.resume_score||'—'}</td>
+                  <td className="px-4 py-3 whitespace-nowrap"><StatusBadge type="fit" value={r.fit_label||'—'} /></td>
+                  <td className="px-4 py-3 whitespace-nowrap"><StatusBadge type="status" value={r.status||'—'} /></td>
+                  <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{r.apply_method||'—'}</td>
                   <td className="px-4 py-3">
                     {r.job_url && <a href={r.job_url} target="_blank" rel="noreferrer" className="text-slate-500 hover:text-primary transition-colors"><ExternalLink size={14} /></a>}
                   </td>

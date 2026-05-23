@@ -30,7 +30,7 @@ export default function StatusBadge({ type, value }) {
   const map = type === 'fit' ? FIT : STATUS
   const cls = map[value] || 'bg-slate-500/20 text-slate-400 border-slate-500/30'
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${cls}`}>
+    <span className={`inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-medium border ${cls}`}>
       {value}
     </span>
   )

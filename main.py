@@ -902,6 +902,7 @@ def process_job(page, context, row: dict, row_num: int,
         field_log = fill_form(
             active_page, platform, profile, profile_name,
             pdf_path, company, title,
+            jd_text=jd_text,
         )
         watchdog.ping()
     except Exception as e:
