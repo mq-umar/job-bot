@@ -380,23 +380,40 @@ def is_salary_below_minimum(jd_text: str, notes: str, profile: dict) -> tuple[bo
 def save_needs_review(profile_name: str, entry: dict, reasons: list[str]) -> None:
     """
     Persist an application that needs human review to output/needs_review.jsonl.
+    Deduplicates by (profile, job_url) — won't add the same URL twice.
     """
     output_dir = BASE_DIR / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
-    record = {
-        "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "profile":      profile_name,
-        "company":      entry.get("company", ""),
-        "title":        entry.get("title", ""),
-        "job_url":      entry.get("job_url", entry.get("url", "")),
-        "platform":     entry.get("platform", ""),
-        "resume":       entry.get("selected_resume", ""),
-        "score":        entry.get("resume_score", ""),
-        "fit_label":    entry.get("fit_label", ""),
-        "review_reasons": reasons,
-        "status":       "needs_review",
-    }
     path = output_dir / "needs_review.jsonl"
+
+    job_url = entry.get("job_url", entry.get("url", ""))
+    # Dedup: skip if same profile+URL already in queue
+    if job_url and path.exists():
+        try:
+            with open(path) as f:
+                for line in f:
+                    try:
+                        r = json.loads(line.strip())
+                        if r.get("profile") == profile_name and r.get("job_url") == job_url:
+                            return  # already queued
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    record = {
+        "timestamp":      datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "profile":        profile_name,
+        "company":        entry.get("company", ""),
+        "title":          entry.get("title", ""),
+        "job_url":        job_url,
+        "platform":       entry.get("platform", ""),
+        "resume":         entry.get("selected_resume", ""),
+        "score":          entry.get("resume_score", ""),
+        "fit_label":      entry.get("fit_label", ""),
+        "review_reasons": reasons,
+        "status":         "needs_review",
+    }
     with open(path, "a") as f:
         f.write(json.dumps(record) + "\n")
 

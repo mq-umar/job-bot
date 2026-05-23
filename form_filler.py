@@ -71,22 +71,11 @@ SKILLS_BY_RESUME = {
     "RC8_Government_Defense.pdf":           "government IT security, compliance frameworks, and secure system administration",
 }
 
-_MUHAMMAD_COVER = (
+_COVER_TEMPLATE = (
     "I am excited to apply for the {title} role at {company}. "
-    "My hands-on experience with {skills} makes me a strong match. "
-    "I am completing my B.S. in Computer Programming at Farmingdale State College "
-    "(May 2026, GPA 3.66) while working full-time as IT Supervisor at Tony's Tacos "
-    "where I built the company's full Microsoft 365 environment from scratch. "
-    "I would love to bring that same ownership mindset to your team."
-)
-
-_RAZIA_COVER = (
-    "I am excited to apply for the {title} role at {company}. "
-    "My background in {skills} positions me well for this opportunity. "
-    "I am a detail-oriented IT security professional with hands-on experience "
-    "implementing security controls, managing endpoints, and working in "
-    "compliance-driven environments. I would welcome the opportunity to "
-    "contribute to your team."
+    "My experience with {skills} makes me a strong candidate for this position. "
+    "I am a results-driven professional with a track record of delivering "
+    "high-quality work and I would welcome the opportunity to contribute to your team."
 )
 
 
@@ -100,9 +89,8 @@ def get_cover_letter(title: str, company: str, resume_name: str, profile_name: s
             f"My background in {kw_str} aligns with your requirements. "
             f"I would welcome the opportunity to discuss how I can contribute to your team."
         )
-    skills   = SKILLS_BY_RESUME.get(resume_name, "IT support, systems administration, and security")
-    template = _RAZIA_COVER if profile_name == "razia" else _MUHAMMAD_COVER
-    return template.format(
+    skills = SKILLS_BY_RESUME.get(resume_name, "IT support, systems administration, and security")
+    return _COVER_TEMPLATE.format(
         title=title or "this position",
         company=company or "your organization",
         skills=skills,
@@ -426,11 +414,11 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
     # Work experience / current role
     if any(x in label_lower for x in ["current employer", "current company",
                                        "company name", "employer name", "organization"]):
-        return p.get("current_employer", p.get("employer", "Tony's Tacos"))
+        return p.get("current_employer", p.get("employer", ""))
     if any(x in label_lower for x in ["current title", "current job title",
                                        "job title", "position title", "current position",
                                        "your title", "role title"]):
-        return p.get("current_title", p.get("title", "IT Supervisor"))
+        return p.get("current_title", p.get("title", ""))
     if any(x in label_lower for x in ["years of experience", "years experience",
                                        "how many years", "years in", "experience years",
                                        "relevant experience"]):

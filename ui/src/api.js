@@ -46,6 +46,11 @@ export const api = {
   deleteJob:  (id)     => req('DELETE',`/jobs/${id}`),
   getStats:        (p) => req('GET',  '/jobs/stats' + (p ? `?profile=${p}` : '')),
   getReviewQueue:  (p) => req('GET',  '/jobs/review_queue' + (p ? `?profile=${p}` : '')),
+  dismissReview:   (job_url, profile) => {
+    const params = new URLSearchParams({ job_url })
+    if (profile) params.set('profile', profile)
+    return req('DELETE', `/jobs/review_queue?${params}`)
+  },
 
   // Resumes
   listResumes:(p)      => req('GET',  `/resumes/${p}`),

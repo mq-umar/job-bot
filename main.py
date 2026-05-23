@@ -1098,8 +1098,8 @@ def main():
                         help="Skip if score < this AND Low Fit (0.0 disables)")
     parser.add_argument("--companies-only", action="store_true",
                         help="Only search Tier 1 company career pages (skip job boards)")
-    parser.add_argument("--tier-max",       type=int, default=4,
-                        help="Search up to this tier: 1=companies, 2=+Indeed, 3=+LinkedIn, 4=+Google Jobs")
+    parser.add_argument("--tier-max",       type=int, default=3,
+                        help="Search up to this tier: 1=Indeed, 2=+LinkedIn, 3=+Google Jobs, 4=+ATS company boards")
     args = parser.parse_args()
 
     profile_name = args.profile.lower()
@@ -1107,8 +1107,10 @@ def main():
 
     jobs_csv = BASE_DIR / "jobs.csv"
     if not jobs_csv.exists():
-        console.print("[red]jobs.csv not found.[/red]")
-        sys.exit(1)
+        console.print("[yellow]jobs.csv not found — creating empty queue.[/yellow]")
+        import pandas as _pd
+        _pd.DataFrame(columns=["id","url","company","title","priority","notes",
+                                "source_tier","source"]).to_csv(jobs_csv, index=False)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

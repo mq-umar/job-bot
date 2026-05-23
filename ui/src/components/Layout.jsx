@@ -2,7 +2,7 @@ import React, { useContext } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, ListTodo, History, FileText, BarChart3,
-  Kanban, User, Settings, Moon, Sun,
+  Kanban, User, Settings, Moon, Sun, ShieldAlert,
 } from 'lucide-react'
 import { AppContext } from '../App'
 
@@ -13,6 +13,7 @@ const NAV = [
   { to: '/resumes',   icon: FileText,          label: 'Resumes'    },
   { to: '/analytics', icon: BarChart3,         label: 'Analytics'  },
   { to: '/tracker',   icon: Kanban,            label: 'Interview'  },
+  { to: '/review',    icon: ShieldAlert,       label: 'Review'     },
   { to: '/profiles',  icon: User,              label: 'Profiles'   },
   { to: '/settings',  icon: Settings,          label: 'Settings'   },
 ]

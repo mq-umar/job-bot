@@ -181,7 +181,7 @@ def run_session(config: Dict) -> None:
     limit        = config.get("limit", 50)
     discover     = config.get("discover", False)
     companies_only = config.get("companies_only", False)
-    tier_max     = config.get("tier_max", 4)
+    tier_max     = config.get("tier_max", 3)
     min_score    = config.get("min_score", 0.0)
     start_id     = config.get("start_id", 1)
     job_id       = config.get("job_id", None)
@@ -241,10 +241,24 @@ def run_session(config: Dict) -> None:
         profile  = load_profile(profile_name)
         jobs_csv = BASE_DIR / "jobs.csv"
         if not jobs_csv.exists():
-            emit("error", "jobs.csv not found")
-            return
+            emit("warning", "jobs.csv not found — creating empty queue. Add jobs via the Job Queue page.")
+            import pandas as _pd
+            _pd.DataFrame(columns=["id","url","company","title","priority","notes",
+                                    "source_tier","source"]).to_csv(jobs_csv, index=False)
 
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        # Clean up stale renamed resume copies from previous sessions
+        _temp = BASE_DIR / "output" / "temp_resumes"
+        if _temp.exists():
+            import glob as _glob
+            for _f in _glob.glob(str(_temp / "*.pdf")):
+                try:
+                    import os as _os
+                    if _os.path.getmtime(_f) < (__import__("time").time() - 3600):
+                        _os.unlink(_f)
+                except Exception:
+                    pass
+
         df = pd.read_csv(jobs_csv)
         df = df[df["url"].notna() & (df["url"].str.strip() != "")]
         if job_id:

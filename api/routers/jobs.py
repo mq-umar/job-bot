@@ -190,6 +190,35 @@ def get_review_queue(profile: Optional[str] = Query(None)):
     return records
 
 
+@router.delete("/review_queue")
+def dismiss_review_item(job_url: str = Query(...), profile: Optional[str] = Query(None)):
+    """Remove a specific entry from needs_review.jsonl by job_url (+ optional profile)."""
+    path = OUTPUT_DIR / "needs_review.jsonl"
+    if not path.exists():
+        return {"dismissed": 0}
+    kept = []
+    dismissed = 0
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                    if r.get("job_url") == job_url and (not profile or r.get("profile") == profile):
+                        dismissed += 1
+                    else:
+                        kept.append(line)
+                except Exception:
+                    kept.append(line)
+        with open(path, "w") as f:
+            f.write("\n".join(kept) + ("\n" if kept else ""))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"dismissed": dismissed}
+
+
 @router.get("/stats")
 def get_stats(profile: Optional[str] = Query(None)):
     results = _read_results(profile)

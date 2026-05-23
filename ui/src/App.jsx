@@ -9,6 +9,7 @@ import Analytics from './pages/Analytics'
 import InterviewTracker from './pages/InterviewTracker'
 import Profiles from './pages/Profiles'
 import Settings from './pages/Settings'
+import ReviewQueue from './pages/ReviewQueue'
 import Onboarding from './components/Onboarding'
 import { api } from './api'
 
@@ -71,6 +72,7 @@ export default function App() {
           <Route path="/tracker"    element={<InterviewTracker />} />
           <Route path="/profiles"   element={<Profiles />} />
           <Route path="/settings"   element={<Settings />} />
+          <Route path="/review"     element={<ReviewQueue />} />
         </Routes>
       </Layout>
     </AppContext.Provider>

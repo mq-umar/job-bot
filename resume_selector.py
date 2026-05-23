@@ -38,91 +38,22 @@ BASE_DIR = Path(__file__).parent
 # ── Resume folders ────────────────────────────────────────────────────────────
 
 def _resume_folder(profile: str) -> Path:
-    """Return the active resume folder, preferring resumes/ then legacy path."""
+    """Return the active resume folder for a profile. Falls back to a profile-named subfolder."""
     primary = BASE_DIR / "resumes" / profile
     if primary.exists() and any(primary.glob("*.pdf")):
         return primary
-    # Legacy paths
-    if profile == "muhammad":
-        legacy = Path(
-            "/Users/admin/Library/Application Support/Claude/"
-            "local-agent-mode-sessions/74cb488d-bd43-4e60-ae29-4b8d0cf4dd7d/"
-            "287c1ab7-62ef-477f-a80b-7fc58dd0e864/"
-            "local_b464a135-25f5-409a-89f5-8d6b7598869b/outputs"
-        )
-        if legacy.exists():
-            return legacy
-    elif profile == "razia":
-        legacy = BASE_DIR / "razia" / "razia_resumes"
-        if legacy.exists():
-            return legacy
+    # Check legacy <profile>/<profile>_resumes/ layout
+    legacy = BASE_DIR / profile / f"{profile}_resumes"
+    if legacy.exists() and any(legacy.glob("*.pdf")):
+        return legacy
     return primary  # return even if empty — caller handles missing PDFs
 
 
-# ── Known resume inventory (for startup verification) ─────────────────────────
-
-ALL_RESUMES = {
-    "muhammad": [
-        "01_IBM_AI_First_Strategy_Consultant.pdf",
-        "02_IBM_Associate_Data_Scientist_2026.pdf",
-        "03_IBM_Application_Developer_Azure_Cloud.pdf",
-        "04_IBM_Software_Engineer_Apprentice_A.pdf",
-        "05_IBM_Software_Engineer_Apprentice_B.pdf",
-        "06_IBM_AI_Software_Developer.pdf",
-        "07_IBM_System_Support_Tech_Apprentice.pdf",
-        "08_IBM_Backend_Developer_Intern_2026.pdf",
-        "09_Dev10_Entry_Level_Data_Engineer.pdf",
-        "10_StepStone_Junior_Analyst_RFP_AI.pdf",
-        "11_Imprint_Software_Engineer.pdf",
-        "12_IT_Project_Manager.pdf",
-        "13_Tinder_Product_Analyst.pdf",
-        "14_FlexTrade_Software_Developer_Cpp.pdf",
-        "15_HomeServe_DevOps_Engineer.pdf",
-        "16_Intuit_Software_Engineer_1.pdf",
-        "17_FullStack_Backend_Engineer.pdf",
-        "18_Deloitte_Forward_Deployed_Engineer.pdf",
-        "19_Honeywell_Software_Engineer_Recent_Grad.pdf",
-        "20_BrandRankAI_Frontend_Software_Engineer.pdf",
-        "Resume_InStride_Updated.pdf",
-        "Job_PASONA_IT_Infrastructure_Engineer.pdf",
-        "Job_IT_Service_Engineer.pdf",
-        "Job_Skopein_IT_Support_Engineer_L2.pdf",
-        "Job_Google_CES_AI_Integration.pdf",
-        "Job_AI_Product_Engineer.pdf",
-        "Resume_BackEnd_Developer.pdf",
-        "Resume_Data_Analyst.pdf",
-        "Resume_Process_Automation_Engineer_FINAL.pdf",
-        "C1_M365_Azure_Intune_Admin.pdf",
-        "C2_Systems_Administrator.pdf",
-        "C3_MSP_Managed_Services.pdf",
-        "C4_Cloud_Infrastructure_Engineer.pdf",
-        "C5_Cybersecurity_Security_Analyst.pdf",
-        "C6_Network_Engineer_Admin.pdf",
-        "C7_IT_Support_Specialist.pdf",
-        "C8_IAM_Identity_Engineer.pdf",
-        "C9_IT_Manager_Director.pdf",
-        "C10_DevOps_Cloud_Automation.pdf",
-    ],
-    "razia": [
-        "RC1_Vulnerability_Management.pdf",
-        "RC2_Endpoint_Security_Intune.pdf",
-        "RC3_macOS_Apple_MDM.pdf",
-        "RC4_Patch_Management_Compliance.pdf",
-        "RC5_SOC_Security_Analyst.pdf",
-        "RC6_IT_Security_Engineer.pdf",
-        "RC7_Cloud_Azure_Security.pdf",
-        "RC8_Government_Defense.pdf",
-    ],
-}
-
-
 def verify_resumes(profile: str = "muhammad") -> tuple[int, int, list[str]]:
-    """Return (found, total, missing_list) for startup reporting."""
-    folder  = _resume_folder(profile)
-    all_res = ALL_RESUMES.get(profile, [])
-    missing = [r for r in all_res if not (folder / r).exists()]
-    found   = len(all_res) - len(missing)
-    return found, len(all_res), missing
+    """Return (found, total, []) scanning the actual folder — no hardcoded list."""
+    folder = _resume_folder(profile)
+    found  = list(folder.glob("*.pdf")) if folder.exists() else []
+    return len(found), len(found), []
 
 
 # ── PDF text extraction + cache ───────────────────────────────────────────────
