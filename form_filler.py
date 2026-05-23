@@ -1079,11 +1079,11 @@ def _fill_country(page, profile: dict, log: list):
 def _fill_location(page, profile: dict, log: list):
     """
     Fill city/location fields using multiple selector strategies.
-    Handles combined "Holbrook, NY", separate city+state, and zip fields.
+    Handles combined "City, ST", separate city+state, and zip fields.
     """
-    city     = profile.get("city", "Holbrook")
-    state    = profile.get("state", "NY")
-    zip_code = profile.get("zip", "11741")
+    city     = profile.get("city", "")
+    state    = profile.get("state", "")
+    zip_code = profile.get("zip", "")
     combined = f"{city}, {state}"
 
     # Attempt combined location field first

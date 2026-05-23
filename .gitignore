@@ -1,16 +1,44 @@
-browser_profile/
+# ── Runtime data (generated, not source) ─────────────────────────────────────
 output/
+jobs.csv
+results_*.csv
+*.log
+needs_review.jsonl
+
+# ── Profile data (personal — copy config/profile.example.json and fill in) ───
+config/muhammad_profile.json
+config/razia_profile.json
+config/*_profile.json
+muhammad/
+razia/
+
+# ── Resumes (contain PII — store locally, never commit) ──────────────────────
 resumes/
+*.pdf
+
+# ── Browser automation state ──────────────────────────────────────────────────
+browser_profile/
+
+# ── Secrets & credentials ─────────────────────────────────────────────────────
+.env
+.env.*
+.bot_key
+*.key
+*.pem
+
+# ── Python ────────────────────────────────────────────────────────────────────
 venv/
 .venv/
 __pycache__/
 *.pyc
-.DS_Store
-.env
-results_*.csv
-ui/node_modules/
-ui/dist/
-.bot_key
+*.pyo
 *.spec
 dist/
 build/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+
+# ── Node / UI ─────────────────────────────────────────────────────────────────
+ui/node_modules/
+ui/dist/
