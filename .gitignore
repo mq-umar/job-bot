@@ -18,6 +18,9 @@ resumes/
 # ── Browser automation state ──────────────────────────────────────────────────
 browser_profile/
 
+# ── App-generated config (created at runtime, may contain encrypted keys) ──────
+config/settings.json
+
 # ── Secrets & credentials ─────────────────────────────────────────────────────
 .env
 .env.*
