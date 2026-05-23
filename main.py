@@ -840,7 +840,7 @@ def process_job(page, context, row: dict, row_num: int,
     if detect_recaptcha(active_page):
         print(f"\n  reCAPTCHA detected at {company} - {title}. "
               f"Solve in browser, press Enter to continue.")
-        input("  > ")
+        input("  captcha: press Enter once solved: ")
         watchdog.ping()
         stats.captcha += 1
 
@@ -1029,7 +1029,7 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
     if detect_recaptcha(active_page):
         print(f"\n  reCAPTCHA before submit at {company} - {title}. "
               "Solve in browser, press Enter.")
-        input("  > ")
+        input("  captcha: press Enter once solved: ")
         watchdog.ping()
         stats.captcha += 1
 
@@ -1131,6 +1131,9 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # ── Startup ───────────────────────────────────────────────────────────────
+    _display_name = (profile.get('full_name')
+                     or f"{profile.get('first_name','')} {profile.get('last_name','')}".strip()
+                     or profile_name)
     console.rule("[bold]Job Application Bot[/bold]")
     mode_flags = " ".join(filter(None, [
         "DISCOVER"       if args.discover       else "",
@@ -1141,7 +1144,7 @@ def main():
         f"LIMIT={args.limit}",
         f"MIN-SCORE={args.min_score}",
     ]))
-    console.print(f"  Profile: [cyan]{profile['full_name']}[/cyan]  |  {mode_flags}")
+    console.print(f"  Profile: [cyan]{_display_name}[/cyan]  |  {mode_flags}")
     print_startup_verification(profile_name)
 
     if args.dry_run:
@@ -1160,7 +1163,7 @@ def main():
     stats        = SessionStats()
 
     # ── Preview table ─────────────────────────────────────────────────────────
-    t = Table(title=f"Jobs — {profile['full_name']}", show_lines=True)
+    t = Table(title=f"Jobs — {_display_name}", show_lines=True)
     t.add_column("ID",   style="cyan"); t.add_column("Company"); t.add_column("Title")
     t.add_column("Status", style="yellow"); t.add_column("Notes")
     job_count = 0
@@ -1183,7 +1186,7 @@ def main():
         console.print("Aborted.")
         return
 
-    console.print(f"\n[bold]Launching browser for {profile['full_name']}...[/bold]")
+    console.print(f"\n[bold]Launching browser for {_display_name}...[/bold]")
     browser_dir = BROWSER_PROF / profile_name
     browser_dir.mkdir(parents=True, exist_ok=True)
 

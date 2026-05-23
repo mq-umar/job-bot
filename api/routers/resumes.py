@@ -78,16 +78,18 @@ def list_resumes(profile: str):
 async def upload_resume(profile: str, file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files accepted")
+    fname = Path(file.filename).name  # strip any directory components from filename
+    _safe_name(fname, "filename")
     folder = _resume_dir(profile)
     folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / file.filename
+    dest = folder / fname
     try:
         with open(dest, "wb") as f:
             content = await file.read()
             f.write(content)
-        return {"uploaded": file.filename, "size_kb": round(dest.stat().st_size / 1024, 1)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"uploaded": fname, "size_kb": round(dest.stat().st_size / 1024, 1)}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Upload failed")
 
 
 @router.delete("/{profile}/{filename}")
@@ -120,8 +122,8 @@ def score_resume(profile: str, filename: str, jd: str = Query(...)):
             "keywords":  keywords,
             "ranking":   [{"filename": n, "score": round(s, 3)} for n, s in ranked[:5]],
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Scoring failed")
 
 
 @router.get("/{profile}/{filename}/download")

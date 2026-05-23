@@ -2,6 +2,9 @@
 Security: session token (CSRF-like protection) + Fernet encryption for sensitive fields.
 Falls back to a local key file if keyring is unavailable.
 """
+import hmac
+import os
+import stat
 from secrets import token_hex
 from pathlib import Path
 from typing import Optional
@@ -42,6 +45,7 @@ def get_or_create_key() -> bytes:
         return _KEY_FILE.read_bytes()
     key = Fernet.generate_key()
     _KEY_FILE.write_bytes(key)
+    os.chmod(_KEY_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 0o600 — owner read/write only
     return key
 
 
@@ -69,4 +73,4 @@ def verify_token(token: Optional[str]) -> bool:
     """Return True if the provided token matches the server's API_TOKEN."""
     if not token:
         return False
-    return token == API_TOKEN
+    return hmac.compare_digest(token, API_TOKEN)

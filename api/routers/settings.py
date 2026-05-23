@@ -130,12 +130,23 @@ def get_blacklist() -> List[str]:
     return []
 
 
+_MAX_BLACKLIST_ENTRIES = 500
+_MAX_BLACKLIST_ENTRY_LEN = 100
+
+
 @router.put("/blacklist")
 def update_blacklist(body: List[str]) -> List[str]:
+    if len(body) > _MAX_BLACKLIST_ENTRIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many entries (max {_MAX_BLACKLIST_ENTRIES})",
+        )
+    cleaned = [e.strip()[:_MAX_BLACKLIST_ENTRY_LEN] for e in body
+               if isinstance(e, str) and e.strip()]
     BLACKLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(BLACKLIST_FILE, "w") as f:
-        json.dump(body, f, indent=2)
-    return body
+        json.dump(cleaned, f, indent=2)
+    return cleaned
 
 
 @router.get("/token")

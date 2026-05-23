@@ -88,7 +88,7 @@ _OPEN_ATS_DOMAINS = {
 def _is_open_ats_url(url: str) -> bool:
     """Return True if URL is hosted on a known open-apply ATS (no company login needed)."""
     try:
-        netloc = urlparse(url).netloc.lower().lstrip("www.")
+        netloc = urlparse(url).netloc.lower().removeprefix("www.")
         return any(netloc == d or netloc.endswith("." + d) for d in _OPEN_ATS_DOMAINS)
     except Exception:
         return False
@@ -657,8 +657,9 @@ def append_to_jobs_csv(new_jobs: list[dict]) -> list[dict]:
         existing_urls.add(url)
 
     if added:
+        write_header = not jobs_csv.exists() or jobs_csv.stat().st_size == 0
         pd.DataFrame(added).to_csv(
-            jobs_csv, mode="a", header=False, index=False,
+            jobs_csv, mode="a", header=write_header, index=False,
         )
         print(f"  Added {len(added)} new jobs to jobs.csv")
 

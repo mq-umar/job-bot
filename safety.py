@@ -372,7 +372,11 @@ def is_salary_below_minimum(jd_text: str, notes: str, profile: dict) -> tuple[bo
     text = f"{notes} {jd_text}".replace(",", "")
 
     # Hourly detection (convert to annual)
-    hourly_m = re.search(r"\$(\d+\.?\d*)\s*[-–/]?\s*\$?(\d+\.?\d*)?\s*/?\s*hr", text, re.I)
+    hourly_m = re.search(
+        r"\$(\d+\.?\d*)\s*[-–/]?\s*\$?(\d+\.?\d*)?\s*"
+        r"(?:/\s*(?:hr\.?|hour)|per\s+hour|an\s+hour)",
+        text, re.I,
+    )
     if hourly_m:
         hi = float(hourly_m.group(2) or hourly_m.group(1))
         annual = int(hi * 2080)
@@ -380,8 +384,8 @@ def is_salary_below_minimum(jd_text: str, notes: str, profile: dict) -> tuple[bo
             return True, f"Salary ${annual:,}/yr (hourly-converted) below minimum ${minimum:,}"
         return False, ""
 
-    # Annual range
-    range_m = re.search(r"\$?(\d+)\s*[kK]?\s*[-–]\s*\$?(\d+)\s*[kK]", text)
+    # Annual range — both k-suffixes are optional so "$80,000–$120,000" matches
+    range_m = re.search(r"\$?(\d+)\s*[kK]?\s*[-–]\s*\$?(\d+)\s*[kK]?", text)
     if range_m:
         lo, hi = int(range_m.group(1)), int(range_m.group(2))
         if hi < 2000:

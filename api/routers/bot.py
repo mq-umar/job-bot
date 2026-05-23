@@ -1,6 +1,6 @@
 """Bot control endpoints: start, stop, pause, status, captcha solved, review answer."""
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from api.bot_runner import BOT_STATE, start_session
 
@@ -10,13 +10,13 @@ router = APIRouter()
 class StartConfig(BaseModel):
     profile: str = ""
     mode: str = "auto"          # auto | review
-    limit: int = 25
+    limit: int = Field(25, ge=1, le=500)
     discover: bool = True
     companies_only: bool = False
-    tier_max: int = 3
-    min_score: float = 0.0
+    tier_max: int = Field(3, ge=1, le=5)
+    min_score: float = Field(0.0, ge=0.0, le=1.0)
     dry_run: bool = False
-    start_id: int = 1
+    start_id: int = Field(1, ge=1)
     job_id: Optional[int] = None
 
 

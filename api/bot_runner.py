@@ -138,7 +138,6 @@ def _patched_input(prompt: str = "") -> str:
     p = str(prompt).lower()
 
     if "start?" in p or "continue?" in p:
-        # Auto-confirm start
         return "y"
 
     if "captcha" in p or "recaptcha" in p:
@@ -147,7 +146,8 @@ def _patched_input(prompt: str = "") -> str:
         BOT_STATE._captcha.clear()
         return ""
 
-    if "submit?" in p or "apply?" in p:
+    # "Submit anyway?" (sensitive field path) and "Submit?" (review mode)
+    if "submit?" in p or "apply?" in p or "submit anyway?" in p:
         if BOT_STATE.session_config and BOT_STATE.session_config.get("mode") == "review":
             emit("info", str(prompt), event_type="review")
             BOT_STATE._review.wait(timeout=120)
@@ -171,14 +171,17 @@ def run_session(config: Dict) -> None:
     config keys: profile, mode, limit, discover, companies_only, tier_max,
                  min_score, dry_run, start_id, job_id
     """
-    BOT_STATE.reset()
-    BOT_STATE.status = "running"
-    BOT_STATE.session_config = config
+    profile_name = (config.get("profile") or "").strip()
+    if not profile_name:
+        emit("error", "No profile specified — cannot start session", event_type="log")
+        BOT_STATE.status = "idle"
+        return
 
-    profile_name = config.get("profile") or ""
+    BOT_STATE.reset()
+    BOT_STATE.session_config = config
     dry_run      = config.get("dry_run", False)
     review       = config.get("mode", "auto") == "review"
-    limit        = config.get("limit", 50)
+    limit        = config.get("limit", 25)
     discover     = config.get("discover", False)
     companies_only = config.get("companies_only", False)
     tier_max     = config.get("tier_max", 3)
@@ -197,6 +200,7 @@ def run_session(config: Dict) -> None:
     # Will be set after imports so the finally block can restore them
     _main_module_ref: Any = None
     _orig_log_result: Any = None
+    _orig_console: Any = None
 
     try:
         import random
@@ -211,9 +215,13 @@ def run_session(config: Dict) -> None:
         )
         from job_finder import discover_jobs, append_to_jobs_csv
 
-        # Patch log_result to track live session stats and emit rich job_result events
+        # Patch log_result and console — main's Console was created before stdout patch,
+        # so it still holds the original stdout handle. Recreate it to capture rich output.
         import main as _main_module_ref
         _orig_log_result = _main_module_ref.log_result
+        _orig_console    = _main_module_ref.console
+        from rich.console import Console as _RichConsole
+        _main_module_ref.console = _RichConsole(file=sys.stdout)
 
         def _tracking_log_result(profile_name_: str, entry: Dict) -> None:
             _orig_log_result(profile_name_, entry)
@@ -471,19 +479,24 @@ def run_session(config: Dict) -> None:
     except Exception as e:
         emit("error", f"Fatal error: {e}", event_type="log")
     finally:
-        if _main_module_ref is not None and _orig_log_result is not None:
-            _main_module_ref.log_result = _orig_log_result
+        if _main_module_ref is not None:
+            if _orig_log_result is not None:
+                _main_module_ref.log_result = _orig_log_result
+            if _orig_console is not None:
+                _main_module_ref.console = _orig_console
         builtins.input = _original_input
         sys.stdout     = old_stdout
         BOT_STATE.current_job = None
-        if BOT_STATE.status == "running":
+        if BOT_STATE.status not in ("stopped", "idle"):
             BOT_STATE.status = "idle"
 
 
 def start_session(config: Dict) -> bool:
     """Start a bot session in a background thread. Returns False if already running."""
-    if BOT_STATE.status == "running":
-        return False
+    with BOT_STATE._lock:
+        if BOT_STATE.status in ("running", "paused"):
+            return False
+        BOT_STATE.status = "running"  # claim the slot atomically before thread starts
     t = threading.Thread(target=run_session, args=(config,), daemon=True)
     t.start()
     return True

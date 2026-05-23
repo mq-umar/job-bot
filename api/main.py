@@ -11,7 +11,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from api.routers import bot, jobs, resumes, profiles, settings as settings_router
 from api.websocket import router as ws_router
 
-app = FastAPI(title="Job Bot", version="2.0.0")
+app = FastAPI(
+    title="Job Bot",
+    version="2.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 # ── Security headers ──────────────────────────────────────────────────────────
 
