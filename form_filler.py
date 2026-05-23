@@ -452,6 +452,53 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
                                        "salary expectation", "salary requirement"]):
         return str(p.get("salary_number", 75000))
 
+    # Security clearance & compliance (common for defense/gov/cyber roles)
+    if any(x in label_lower for x in ["security clearance", "clearance level",
+                                       "do you hold", "hold a clearance", "possess a clearance",
+                                       "clearance required"]):
+        return p.get("security_clearance", "No")
+    if any(x in label_lower for x in ["willing to obtain", "obtain a clearance",
+                                       "open to clearance", "clearance eligible"]):
+        return "Yes"
+    if any(x in label_lower for x in ["background check", "background investigation",
+                                       "consent to background", "drug test", "drug screen",
+                                       "drug screening"]):
+        return "Yes"
+    if any(x in label_lower for x in ["non-compete", "non compete", "non disclosure",
+                                       "confidentiality agreement"]):
+        return "No"
+
+    # Comfort / availability questions → always yes
+    if any(x in label_lower for x in ["comfortable", "open to", "willing to work",
+                                       "able to work", "available to work",
+                                       "flexible to work", "can you work"]):
+        return "Yes"
+    if any(x in label_lower for x in ["overtime", "travel", "on-site", "onsite",
+                                       "in-person", "hybrid", "shift work",
+                                       "night shift", "weekend"]):
+        return "Yes"
+
+    # "Do you have experience with X?" / "Are you familiar with X?" → Yes
+    if any(x in label_lower for x in ["do you have experience", "do you have familiarity",
+                                       "experience with", "familiar with", "proficient in",
+                                       "knowledge of", "exposure to"]):
+        return "Yes"
+
+    # Agree / confirm type questions
+    if any(x in label_lower for x in ["do you agree", "i agree", "i understand",
+                                       "i confirm", "i certify", "acknowledgment"]):
+        return "Yes"
+
+    # COVID / health related
+    if any(x in label_lower for x in ["vaccinated", "vaccination", "covid", "health screening"]):
+        return "Yes"
+
+    # Open ended "Tell us more" → cover letter
+    if any(x in label_lower for x in ["tell us more", "anything else", "additional information",
+                                       "additional comments", "please describe",
+                                       "please explain", "elaborate"]):
+        return get_cover_letter(title, company, resume_name, profile_name, matched_keywords)
+
     return None
 
 
@@ -796,6 +843,140 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
                              "note": "checkbox: no match"})
         except Exception as e:
             log.append({"field": "checkbox", "status": "error", "note": str(e)[:80]})
+
+    # ── ARIA comboboxes (LinkedIn / Workday / modern ATS custom dropdowns) ────
+    seen_comboboxes: set = set()
+    for el in page.locator("[role='combobox']:not(select):visible").all():
+        try:
+            el_id = el.get_attribute("id") or el.get_attribute("aria-labelledby") or ""
+            if el_id in seen_comboboxes:
+                continue
+            seen_comboboxes.add(el_id)
+
+            label_text  = _get_label(page, el) or el.get_attribute("aria-label") or ""
+            if not label_text:
+                continue
+            label_lower = label_text.lower()
+
+            if _is_salary_label(label_lower):
+                value = _salary_value(el, profile, label_lower)
+            else:
+                value = _profile_value(label_lower, profile, profile_name,
+                                       resume_name, company, title)
+            if value is None:
+                continue
+
+            # Click to open, type, then pick first matching option
+            try:
+                el.click()
+                human_delay(0.3, 0.6)
+                el.fill(str(value))
+                human_delay(0.5, 0.9)
+                # Wait for dropdown options
+                opt_sel = (
+                    "[role='option']:visible, [role='listbox'] li:visible, "
+                    "[data-automation-id='promptOption']:visible, "
+                    ".artdeco-typeahead__results li:visible"
+                )
+                opts = page.locator(opt_sel).all()
+                val_low = str(value).lower()
+                matched = False
+                for opt in opts[:20]:
+                    try:
+                        opt_text = opt.inner_text(timeout=300).strip()
+                        if val_low in opt_text.lower() or opt_text.lower() in val_low:
+                            opt.click()
+                            human_delay(0.2, 0.4)
+                            matched = True
+                            break
+                    except Exception:
+                        pass
+                if not matched and opts:
+                    try:
+                        # pick first non-placeholder option
+                        for opt in opts[:10]:
+                            opt_text = opt.inner_text(timeout=300).strip()
+                            if opt_text and opt_text.lower() not in ("select", "choose", "please select", ""):
+                                opt.click()
+                                human_delay(0.2, 0.4)
+                                matched = True
+                                break
+                    except Exception:
+                        pass
+                if not matched:
+                    page.keyboard.press("Escape")
+                log.append({"field": label_text, "status": "filled" if matched else "skipped",
+                             "value": str(value)[:80]})
+            except Exception as e:
+                log.append({"field": label_text, "status": "error", "note": str(e)[:60]})
+        except Exception:
+            pass
+
+    # ── ARIA radio groups [role='radio'] (LinkedIn custom UI) ─────────────────
+    seen_aria_radio: set = set()
+    for el in page.locator("[role='radio']:visible").all():
+        try:
+            # Group by aria-name or containing element
+            group_el = None
+            for ancestor_sel in ["[role='radiogroup']", "fieldset", "[role='group']"]:
+                try:
+                    g = el.locator(f"xpath=ancestor::{ancestor_sel.strip('[').split('[')[0].split(']')[0]}[1]")
+                    if g.count():
+                        group_el = g.first
+                        break
+                except Exception:
+                    pass
+
+            group_label = ""
+            if group_el:
+                try:
+                    # Try legend, aria-label, or heading inside group
+                    for lbl_sel in ["legend", "[aria-label]", "h3", "h4", "label"]:
+                        try:
+                            t = group_el.locator(lbl_sel).first.inner_text(timeout=300).strip()
+                            if t:
+                                group_label = t
+                                break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            if not group_label:
+                group_label = el.get_attribute("name") or el.get_attribute("aria-label") or ""
+
+            group_key = group_label.lower()[:50]
+            if not group_key or group_key in seen_aria_radio:
+                continue
+            seen_aria_radio.add(group_key)
+
+            value = _profile_value(group_key, profile, profile_name,
+                                   resume_name, company, title)
+            if value is None:
+                continue
+
+            val_low = str(value).lower()
+            # Find all radios in same group and pick matching one
+            group_radios = (
+                page.locator(f"[role='radio'][name='{el.get_attribute('name')}']:visible")
+                if el.get_attribute("name")
+                else page.locator("[role='radio']:visible")
+            ).all()
+            for radio in group_radios:
+                try:
+                    lbl = radio.get_attribute("aria-label") or radio.inner_text(timeout=300) or ""
+                    lbl_low = lbl.strip().lower()
+                    if (val_low in lbl_low or lbl_low in val_low
+                            or (val_low == "yes" and lbl_low.startswith("yes"))
+                            or (val_low == "no" and lbl_low.startswith("no"))):
+                        radio.click()
+                        human_delay(0.2, 0.4)
+                        log.append({"field": group_label, "status": "filled", "value": lbl.strip()})
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 # ── Country autocomplete (Greenhouse-specific) ────────────────────────────────
@@ -1166,6 +1347,154 @@ def find_apply_button(page, platform: str, context=None):
 
 # ── Indeed Easy Apply handler ─────────────────────────────────────────────────
 
+def _indeed_handle_resume_choice(page, resume_pdf_path: str, log: list) -> bool:
+    """
+    Handle Indeed's 'How would you like to apply?' / resume source modal.
+    Prefers uploading our PDF over Indeed's stored resume.
+    Returns True if we handled it.
+    """
+    # "Upload resume" / "Use a different resume" button
+    for btn_text in ["Upload resume", "Upload a resume", "Use a different resume",
+                     "Upload", "Change resume"]:
+        try:
+            btn = page.locator(f"button:has-text('{btn_text}'):visible").first
+            if btn.is_visible(timeout=800):
+                try:
+                    with page.expect_file_chooser(timeout=5000) as fc_info:
+                        btn.click()
+                    fc_info.value.set_files(resume_pdf_path)
+                    time.sleep(1.0)
+                    log.append({"field": "_meta_resume_replaced", "status": "yes",
+                                 "value": f"indeed_upload_btn:{btn_text}"})
+                    print(f"  [Indeed] Uploaded resume via '{btn_text}'")
+                    return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # If Indeed resume radio exists, try to select "Upload new resume" option
+    for radio_text in ["Upload resume", "Upload a new resume", "Use a different file"]:
+        try:
+            radio = page.locator(f"label:has-text('{radio_text}'):visible").first
+            if radio.is_visible(timeout=500):
+                radio.click()
+                human_delay(0.5, 1.0)
+                # Now look for file input
+                fi = page.locator("input[type='file']").first
+                if fi.is_visible(timeout=2000):
+                    fi.set_input_files(resume_pdf_path)
+                    time.sleep(1.0)
+                    log.append({"field": "_meta_resume_replaced", "status": "yes",
+                                 "value": "indeed_radio_upload"})
+                    print(f"  [Indeed] Uploaded resume via radio '{radio_text}'")
+                    return True
+        except Exception:
+            pass
+
+    return False
+
+
+def _indeed_dismiss_salary_modal(page, profile: dict, log: list) -> bool:
+    """
+    Dismiss/fill Indeed's salary expectation modal that may appear before the form.
+    Returns True if a salary modal was found and handled.
+    """
+    salary_modal_sels = [
+        "[data-testid='salary-modal']",
+        "[aria-label*='salary' i]",
+        ".ia-SalaryPage",
+        "[class*='salary']",
+    ]
+    for sel in salary_modal_sels:
+        try:
+            modal = page.locator(sel).first
+            if not modal.is_visible(timeout=600):
+                continue
+            print("  [Indeed] Salary modal detected")
+            # Try to fill salary field
+            sal_inp = modal.locator("input[type='text'], input[type='number']").first
+            if sal_inp.is_visible(timeout=500):
+                sal_val = str(profile.get("salary_number", 75000))
+                sal_inp.click(); sal_inp.fill(sal_val)
+                human_delay(0.3, 0.5)
+                log.append({"field": "indeed_salary_modal", "status": "filled", "value": sal_val})
+            # Click "Save and continue" or "Skip" or "Continue"
+            for btn_text in ["Save and continue", "Continue", "Skip", "Submit"]:
+                try:
+                    btn = page.locator(f"button:has-text('{btn_text}'):visible").first
+                    if btn.is_visible(timeout=600):
+                        btn.click()
+                        human_delay(0.8, 1.5)
+                        return True
+                except Exception:
+                    pass
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def _indeed_answer_screening(page, profile: dict, profile_name: str,
+                              resume_name: str, log: list, company: str, title: str):
+    """
+    Handle Indeed's Yes/No screening questions which have long option labels
+    like 'Yes, I have 2+ years of experience' rather than plain 'Yes'.
+    """
+    # Find all visible question containers
+    for q_sel in [".ia-Questions-item", "[data-testid='question-item']",
+                  ".ia-BasePage-prompt", "[class*='FormField']"]:
+        try:
+            items = page.locator(q_sel).all()
+            for item in items:
+                try:
+                    question_text = item.locator("legend, label, p, h3").first.inner_text(timeout=300)
+                    q_low = question_text.lower()
+                    value = _profile_value(q_low, profile, profile_name,
+                                           resume_name, company, title)
+                    if value is None:
+                        continue
+
+                    val_low = str(value).lower()
+
+                    # Try radio buttons inside this item
+                    radios = item.locator("input[type='radio']").all()
+                    if radios:
+                        for radio in radios:
+                            try:
+                                rid = radio.get_attribute("id") or ""
+                                lbl_el = page.locator(f"label[for='{rid}']").first if rid else None
+                                lbl_text = lbl_el.inner_text(timeout=300).strip() if (lbl_el and lbl_el.count()) else (radio.get_attribute("value") or "")
+                                lbl_low = lbl_text.lower()
+                                match = (
+                                    val_low in lbl_low
+                                    or (val_low == "yes" and lbl_low.startswith("yes"))
+                                    or (val_low == "no" and (lbl_low.startswith("no") or "decline" in lbl_low))
+                                    or (val_low == "yes" and "i am" in lbl_low and "not" not in lbl_low)
+                                    or (val_low == "yes" and "i have" in lbl_low and "not" not in lbl_low)
+                                    or (val_low == "yes" and "i do" in lbl_low and "not" not in lbl_low)
+                                )
+                                if match:
+                                    radio.click()
+                                    human_delay(0.2, 0.4)
+                                    log.append({"field": question_text[:60], "status": "filled",
+                                                 "value": lbl_text[:60]})
+                                    break
+                            except Exception:
+                                pass
+
+                    # Try select inside this item
+                    sel_el = item.locator("select").first
+                    if sel_el.count() and sel_el.is_visible(timeout=300):
+                        _best_option(sel_el, value)
+                        log.append({"field": question_text[:60], "status": "filled",
+                                     "value": value})
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
 def fill_indeed_easy_apply(page, context, profile: dict, profile_name: str,
                             resume_pdf_path: str, log: list,
                             company: str = "", title: str = "") -> str:
@@ -1220,37 +1549,64 @@ def fill_indeed_easy_apply(page, context, profile: dict, profile_name: str,
     except Exception:
         pass
 
-    for _step in range(20):
+    for _step in range(25):
         if detect_recaptcha(page):
             print("\n  [CAPTCHA] Solve reCAPTCHA then press Enter...")
             input("  > ")
 
+        # Handle salary modal that may appear at any step
+        _indeed_dismiss_salary_modal(page, profile, log)
+
+        # Handle resume choice / upload modal
+        _indeed_handle_resume_choice(page, resume_pdf_path, log)
+
+        # File input (fallback resume upload)
         try:
             fi = page.locator("input[type='file']").first
-            if fi.is_visible(timeout=1000):
+            if fi.is_visible(timeout=700):
                 replace_indeed_resume(page, resume_pdf_path, log)
                 human_delay(1, 2)
         except Exception:
             pass
 
+        # Extended screening question handler (handles long option text)
+        _indeed_answer_screening(page, profile, profile_name, resume_name,
+                                  log, company, title)
+
+        # General field scanner
         _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
 
+        # "Confirm your information" page — click Continue/Confirm
+        for confirm_text in ["Confirm your information", "Continue to review",
+                              "Confirm", "Review your application"]:
+            try:
+                confirm_btn = page.locator(
+                    f"button:has-text('{confirm_text}'):visible"
+                ).first
+                if confirm_btn.is_visible(timeout=500):
+                    confirm_btn.click()
+                    human_delay(1, 2)
+                    break
+            except Exception:
+                pass
+
+        # Check for submit button
         try:
             sub = page.locator(
                 "button:has-text('Submit your application'), "
                 "button:has-text('Submit application')"
             ).first
-            if sub.is_visible(timeout=1000):
+            if sub.is_visible(timeout=700):
                 return "easy_apply"
         except Exception:
             pass
 
         advanced = False
         for next_text in ["Continue", "Next", "Review your application",
-                          "Review", "Next: Work experience"]:
+                          "Review", "Next: Work experience", "Save and continue"]:
             try:
-                nav = page.locator(f"button:has-text('{next_text}')").last
-                if nav.is_visible(timeout=1000):
+                nav = page.locator(f"button:has-text('{next_text}'):visible").last
+                if nav.is_visible(timeout=700):
                     nav.click()
                     try:
                         page.wait_for_selector(
@@ -1442,6 +1798,58 @@ def _li_resume_step(page, resume_pdf_path: str, log: list) -> bool:
     return True  # still on resume step, just didn't replace
 
 
+def _li_fix_validation_errors(page, profile, profile_name, resume_name,
+                              log, company, title) -> int:
+    """
+    Detect LinkedIn validation error messages and try to fill the offending fields.
+    Returns number of errors found.
+    """
+    error_sels = [
+        ".artdeco-inline-feedback--error",
+        "[class*='error-msg']",
+        "[class*='form-msg--error']",
+        "[aria-invalid='true']",
+        ".jobs-easy-apply-form-element__error",
+        "[data-test-form-element-error-message]",
+    ]
+    errors_found = 0
+    for sel in error_sels:
+        try:
+            err_els = page.locator(sel).all()
+            for err_el in err_els:
+                if err_el.is_visible(timeout=300):
+                    errors_found += 1
+                    # Try to find the associated input nearby
+                    try:
+                        # Walk up to form element, find first input
+                        parent = err_el.locator("xpath=ancestor::div[@class][1]")
+                        inp = parent.locator(
+                            "input:visible, select:visible, textarea:visible, [role='combobox']:visible"
+                        ).first
+                        if inp.is_visible(timeout=300):
+                            label = _get_label(page, inp) or inp.get_attribute("aria-label") or ""
+                            label_low = label.lower()
+                            if _is_salary_label(label_low):
+                                val = _salary_value(inp, profile, label_low)
+                            else:
+                                val = _profile_value(label_low, profile, profile_name,
+                                                     resume_name, company, title)
+                            if val is None:
+                                val = "N/A"  # last resort to clear "required" error
+                            inp_type = (inp.evaluate("e => e.tagName") or "").lower()
+                            if inp_type == "select":
+                                _best_option(inp, val)
+                            else:
+                                inp.click()
+                                inp.fill(str(val))
+                            human_delay(0.3, 0.5)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return errors_found
+
+
 def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
                            resume_pdf_path: str, log: list,
                            company: str = "", title: str = "") -> tuple:
@@ -1457,11 +1865,16 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
 
     wait_for_page_ready(page)
 
-    # Check if already applied
+    # Check if already applied (LinkedIn shows "Applied" badge)
     try:
-        if page.locator("text=Applied").is_visible(timeout=2000):
-            print("  [LinkedIn] Already applied to this job")
-            return "no_button", None
+        for already_sel in [
+            "button[aria-label*='Applied']",
+            ".jobs-apply-button[aria-label*='Applied']",
+            "span:has-text('Applied')",
+        ]:
+            if page.locator(already_sel).is_visible(timeout=800):
+                print("  [LinkedIn] Already applied to this job")
+                return "no_button", None
     except Exception:
         pass
 
@@ -1478,6 +1891,7 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
             return "no_button", None
 
         # Wait for the Easy Apply modal to appear
+        modal_appeared = False
         for modal_sel in [
             ".jobs-easy-apply-modal",
             "[data-test-modal]",
@@ -1486,17 +1900,78 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
         ]:
             try:
                 page.wait_for_selector(modal_sel, timeout=8000)
+                modal_appeared = True
                 break
             except Exception:
                 pass
+        if not modal_appeared:
+            human_delay(2, 3)  # give it extra time
         human_delay(1, 1.5)
 
-        for _step in range(20):
+        _prev_step_html = ""
+        _same_step_count = 0
+
+        for _step in range(25):
             human_delay(0.6, 1.0)
 
             if detect_recaptcha(page):
                 print("\n  [CAPTCHA] reCAPTCHA — solve then press Enter...")
                 input("  > ")
+
+            # ── Check if modal closed (application submitted or dismissed) ────
+            modal_gone = True
+            for modal_sel in [".jobs-easy-apply-modal", ".artdeco-modal", "[role='dialog']"]:
+                try:
+                    if page.locator(modal_sel).is_visible(timeout=300):
+                        modal_gone = False
+                        break
+                except Exception:
+                    pass
+            if modal_gone and _step > 0:
+                # Check if it was submitted
+                try:
+                    body = page.inner_text("body").lower()[:3000]
+                    if any(kw in body for kw in [
+                        "your application was sent", "application submitted",
+                        "successfully submitted", "application was submitted",
+                    ]):
+                        print("  [LinkedIn] Application submitted — modal closed")
+                        return "easy_apply", page
+                except Exception:
+                    pass
+                print("  [LinkedIn] Modal closed unexpectedly")
+                return "easy_apply", page
+
+            # ── Check for "Follow company" optional final step ────────────────
+            try:
+                follow_el = page.locator(
+                    "button[aria-label*='follow']:visible, "
+                    "button:has-text('Follow'):visible"
+                ).first
+                if follow_el.is_visible(timeout=300):
+                    # Check if there's a Submit button too — if yes, skip this check
+                    has_submit = False
+                    for sub_sel in ["button[aria-label='Submit application']",
+                                    "button:has-text('Submit application')"]:
+                        try:
+                            if page.locator(sub_sel).is_visible(timeout=200):
+                                has_submit = True
+                                break
+                        except Exception:
+                            pass
+                    if not has_submit:
+                        # This is the "Follow company" step — uncheck and advance
+                        try:
+                            follow_cb = page.locator("input[type='checkbox']:visible").first
+                            if follow_cb.is_visible(timeout=300) and follow_cb.is_checked():
+                                follow_cb.click()  # uncheck "follow"
+                        except Exception:
+                            pass
+                        print(f"  [LinkedIn] 'Follow company' step — skipping")
+                        if _li_advance_step(page):
+                            continue
+            except Exception:
+                pass
 
             # ── Check for submit / final review page ──────────────────────────
             for sub_sel in [
@@ -1512,12 +1987,37 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
                 except Exception:
                     pass
 
+            # ── Detect stuck-on-same-step loop ────────────────────────────────
+            try:
+                cur_html = page.locator(
+                    ".jobs-easy-apply-modal, .artdeco-modal, [role='dialog']"
+                ).first.inner_html(timeout=1000)[:500]
+            except Exception:
+                cur_html = ""
+            if cur_html == _prev_step_html and cur_html:
+                _same_step_count += 1
+                if _same_step_count >= 3:
+                    print(f"  [LinkedIn] Stuck on same step — trying error fix")
+                    _li_fix_validation_errors(page, profile, profile_name,
+                                             resume_name, log, company, title)
+                    _same_step_count = 0
+                    # Force-advance after fixing errors
+                    _li_advance_step(page)
+                    continue
+            else:
+                _same_step_count = 0
+            _prev_step_html = cur_html
+
             # ── Resume step: upload/select our PDF ────────────────────────────
             _li_resume_step(page, resume_pdf_path, log)
 
             # ── Fill any other visible form fields on this step ───────────────
             _scan_and_fill(page, profile, profile_name, resume_name,
                            log, company, title)
+
+            # ── Fix any validation errors before advancing ────────────────────
+            _li_fix_validation_errors(page, profile, profile_name,
+                                     resume_name, log, company, title)
 
             # ── Advance to next step ──────────────────────────────────────────
             if not _li_advance_step(page):
@@ -1834,6 +2334,124 @@ def _fill_linkedin(page, profile: dict, profile_name: str,
     return False
 
 
+# ── Workday date-picker helper ────────────────────────────────────────────────
+
+def _fill_workday_dates(page, profile: dict, log: list):
+    """
+    Handle Workday's custom date pickers (separate month/day/year widgets).
+    Workday uses data-automation-id attributes like dateSectionMonthInput,
+    dateSectionDayInput, dateSectionYearInput for date sub-fields.
+    """
+    import re as _re
+    edu = profile.get("education", {})
+    graduation = edu.get("graduation", "")
+    grad_year  = ""
+    grad_month = "5"  # default May
+    if graduation:
+        yr_m = _re.search(r'(\d{4})', str(graduation))
+        if yr_m:
+            grad_year = yr_m.group(1)
+        mo_m = _re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)', str(graduation).lower())
+        if mo_m:
+            grad_month = str(["jan","feb","mar","apr","may","jun",
+                               "jul","aug","sep","oct","nov","dec"].index(mo_m.group(1)) + 1)
+
+    # Pattern: [data-automation-id='dateSectionMonthInput'] / DayInput / YearInput
+    # Also handles inline label variants like wd-DateSectionField
+    date_groups = [
+        ("dateSectionMonthInput", "dateSectionDayInput", "dateSectionYearInput"),
+        # Some Workday tenants use these
+        ("monthSection", "daySection", "yearSection"),
+    ]
+    for mo_id, day_id, yr_id in date_groups:
+        try:
+            yr_el = page.locator(f"[data-automation-id='{yr_id}']").first
+            mo_el = page.locator(f"[data-automation-id='{mo_id}']").first
+            if not yr_el.is_visible(timeout=400):
+                continue
+            # Year
+            if grad_year:
+                tag = yr_el.evaluate("e => e.tagName.toUpperCase()")
+                if tag == "SELECT":
+                    _best_option(yr_el, grad_year)
+                else:
+                    yr_el.click(); yr_el.fill(grad_year)
+                log.append({"field": "wd_grad_year", "status": "filled", "value": grad_year})
+            # Month
+            if mo_el.is_visible(timeout=300):
+                tag = mo_el.evaluate("e => e.tagName.toUpperCase()")
+                if tag == "SELECT":
+                    _best_option(mo_el, grad_month)
+                else:
+                    mo_el.click(); mo_el.fill(grad_month)
+                log.append({"field": "wd_grad_month", "status": "filled", "value": grad_month})
+            break
+        except Exception:
+            pass
+
+    # Workday "start date available" fields — fill with notice period
+    notice = profile.get("notice_period", "2 weeks")
+    for sel in ["[data-automation-id*='availableDate']", "[data-automation-id*='startDate']",
+                "[data-automation-id*='AvailableDate']"]:
+        try:
+            el = page.locator(sel).first
+            if el.is_visible(timeout=300):
+                tag = el.evaluate("e => e.tagName.toUpperCase()")
+                if tag in ("INPUT", "TEXTAREA"):
+                    el.click(); el.fill(notice)
+                    log.append({"field": "wd_start_date", "status": "filled", "value": notice})
+        except Exception:
+            pass
+
+
+def _fill_workday_eeo(page, profile: dict, log: list):
+    """
+    Handle Workday EEO (Equal Employment Opportunity) section.
+    Workday EEO uses [data-automation-id='promptOption'] radio-like items
+    inside a grouped list structure.
+    """
+    eeo_fields = [
+        ("gender",    profile.get("gender", ""),     ["gender", "sex"]),
+        ("ethnicity", profile.get("ethnicity", ""),  ["ethnic", "race"]),
+        ("veteran",   profile.get("veteran", "No"),  ["veteran", "military"]),
+        ("disability",profile.get("disability","No"),["disability", "disabled"]),
+    ]
+    for field_key, answer, keywords in eeo_fields:
+        if not answer:
+            continue
+        try:
+            # Find EEO section by scanning section headings
+            for heading in page.locator(
+                "[data-automation-id='sectionTitle']:visible, "
+                "h2:visible, h3:visible, legend:visible"
+            ).all():
+                try:
+                    heading_text = heading.inner_text(timeout=300).lower()
+                    if not any(kw in heading_text for kw in keywords):
+                        continue
+                    # Find the nearest prompt options
+                    container = heading.locator("xpath=ancestor::div[@data-automation-id][1]")
+                    opts = container.locator("[data-automation-id='promptOption']:visible").all()
+                    ans_low = answer.lower()
+                    for opt in opts:
+                        try:
+                            opt_text = opt.inner_text(timeout=300).lower()
+                            if (ans_low in opt_text or opt_text in ans_low
+                                    or (ans_low == "no" and ("decline" in opt_text or "not" in opt_text or "prefer not" in opt_text))
+                                    or (ans_low == "yes" and opt_text.startswith("yes"))):
+                                opt.click()
+                                human_delay(0.3, 0.5)
+                                log.append({"field": f"wd_eeo_{field_key}", "status": "filled",
+                                             "value": opt_text[:40]})
+                                break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
 # ── Workday handler ───────────────────────────────────────────────────────────
 
 def _fill_workday(page, profile: dict, profile_name: str,
@@ -1843,8 +2461,9 @@ def _fill_workday(page, profile: dict, profile_name: str,
     human_delay(1.5, 2.5)
     resume_name = Path(resume_pdf_path).name
 
-    for _step in range(12):
+    for _step in range(15):
         dismiss_popups(page)
+        wait_for_page_ready(page)
 
         # Upload resume/CV when a file input appears on this step
         try:
@@ -1858,39 +2477,58 @@ def _fill_workday(page, profile: dict, profile_name: str,
         except Exception:
             pass
 
+        # Workday-specific: date pickers and EEO section
+        _fill_workday_dates(page, profile, log)
+        _fill_workday_eeo(page, profile, log)
+
+        # Fill all visible fields (includes ARIA comboboxes / radios)
         _scan_and_fill(page, profile, profile_name, resume_name, log, company, title)
 
-        # Stop if submit button is the only navigation left
-        for sub_sel in [
-            "button[data-automation-id='bottomNavigationNextButton']",
-            "button[aria-label*='Submit']", "button:has-text('Submit')",
-        ]:
-            try:
-                sub = page.locator(sub_sel).last
-                if sub.is_visible(timeout=400):
-                    label = (sub.inner_text() or "").strip().lower()
-                    if any(t in label for t in ["submit", "done", "complete", "finish"]):
-                        return  # caller (_finish_job) will click
-            except Exception:
-                pass
+        # Check if bottomNavigationNextButton is the submit action
+        try:
+            nav_btn = page.locator(
+                "button[data-automation-id='bottomNavigationNextButton']"
+            ).last
+            if nav_btn.is_visible(timeout=500):
+                label = (nav_btn.inner_text(timeout=300) or "").strip().lower()
+                enabled = nav_btn.is_enabled(timeout=300)
+                if any(t in label for t in ["submit", "done", "complete", "finish"]):
+                    return  # let caller submit
+                if enabled:
+                    nav_btn.click()
+                    human_delay(2.5, 4.0)
+                    continue
+                else:
+                    # Button disabled — likely a required field not filled;
+                    # run scan again and wait briefly
+                    _scan_and_fill(page, profile, profile_name, resume_name,
+                                   log, company, title)
+                    human_delay(1.5, 2.0)
+                    if nav_btn.is_enabled(timeout=500):
+                        nav_btn.click()
+                        human_delay(2.5, 4.0)
+                        continue
+        except Exception:
+            pass
 
-        # Advance to next step
+        # Other next/continue buttons
         advanced = False
         for sel in [
-            "button[data-automation-id='bottomNavigationNextButton']",
             "button:has-text('Next')", "button:has-text('Save and Continue')",
             "button:has-text('Continue')", "button:has-text('Save')",
         ]:
             try:
                 btn = page.locator(sel).last
-                if btn.is_visible(timeout=1000):
-                    label = (btn.inner_text() or "").strip().lower()
+                if btn.is_visible(timeout=700):
+                    enabled = btn.is_enabled(timeout=300)
+                    label = (btn.inner_text(timeout=300) or "").strip().lower()
                     if any(t in label for t in ["submit", "done", "complete", "finish"]):
-                        return  # reached final step — let caller submit
-                    btn.click()
-                    human_delay(2.5, 4.0)  # Workday transitions are slow
-                    advanced = True
-                    break
+                        return
+                    if enabled:
+                        btn.click()
+                        human_delay(2.5, 4.0)
+                        advanced = True
+                        break
             except Exception:
                 pass
         if not advanced:
