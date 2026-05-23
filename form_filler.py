@@ -1173,20 +1173,20 @@ def _fill_location(page, profile: dict, log: list):
 
 # ── Page-ready helper ────────────────────────────────────────────────────────
 
-def wait_for_page_ready(page, timeout: int = 15000) -> None:
-    """Wait for networkidle, loading spinners to vanish, and JS to finish rendering."""
+def wait_for_page_ready(page, timeout: int = 8000) -> None:
+    """Wait for page resources to load. Never uses networkidle — too slow on SPAs."""
     try:
-        page.wait_for_load_state("networkidle", timeout=timeout)
+        page.wait_for_load_state("load", timeout=timeout)
     except Exception:
         pass
     for sel in [".loading", ".spinner", "[class*='loading']",
                 "[class*='skeleton']", "[aria-busy='true']"]:
         try:
-            page.locator(sel).first.wait_for(state="hidden", timeout=2000)
+            page.locator(sel).first.wait_for(state="hidden", timeout=800)
         except Exception:
             pass
     try:
-        page.wait_for_timeout(1500)
+        page.wait_for_timeout(300)
     except Exception:
         pass
 
@@ -1736,7 +1736,12 @@ def _li_advance_step(page) -> bool:
             if btn.is_visible(timeout=600):
                 label = btn.get_attribute("aria-label") or btn.inner_text(timeout=300)
                 btn.click()
-                page.wait_for_timeout(1500)   # let DOM re-render next step
+                # Wait for button to disappear (step changed) — much faster than fixed delay
+                try:
+                    btn.wait_for(state="hidden", timeout=800)
+                except Exception:
+                    pass
+                page.wait_for_timeout(400)
                 print(f"  [LinkedIn] → clicked '{label.strip()}'")
                 return True
         except Exception:
@@ -1932,7 +1937,7 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
       ("company_site", new_page) — Apply redirected to company site
       ("no_button", None)        — no apply button found after exhaustive search
     """
-    human_delay(1.5, 2.5)
+    human_delay(0.3, 0.6)
     resume_name = Path(resume_pdf_path).name
 
     wait_for_page_ready(page)
@@ -1978,13 +1983,13 @@ def handle_linkedin_apply(page, context, profile: dict, profile_name: str,
                 pass
         if not modal_appeared:
             human_delay(2, 3)  # give it extra time
-        human_delay(1, 1.5)
+        human_delay(0.3, 0.5)
 
         _prev_step_html = ""
         _same_step_count = 0
 
         for _step in range(25):
-            human_delay(0.6, 1.0)
+            human_delay(0.2, 0.4)
 
             if detect_recaptcha(page):
                 print("\n  [CAPTCHA] reCAPTCHA — solve then press Enter...")

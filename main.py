@@ -44,7 +44,7 @@ from form_filler import (
     wait_for_submission_confirmation,
 )
 from job_finder import append_to_jobs_csv, discover_jobs
-from resume_selector import fit_label, pick_resume_with_details, verify_resumes
+from resume_selector import fit_label, make_upload_copy, pick_resume_with_details, verify_resumes
 try:
     from safety import (
         has_sensitive_flags, is_scam_job, check_company_cooldown,
@@ -585,6 +585,8 @@ def process_job(page, context, row: dict, row_num: int,
                 title, notes, profile_name, company, jd_text,
             )
             _print_resume_selection(title, company, fname, score, fit, keywords)
+            pdf_path = make_upload_copy(pdf_path, profile.get("first_name",""), profile.get("last_name",""), title)
+            fname = Path(pdf_path).name
 
             # Score gate (only if enabled and Low Fit)
             if min_score > 0 and score < min_score and fit == "Low Fit":
@@ -658,6 +660,8 @@ def process_job(page, context, row: dict, row_num: int,
             title, notes, profile_name, company, jd_text,
         )
         _print_resume_selection(title, company, fname, score, fit, keywords)
+        pdf_path = make_upload_copy(pdf_path, profile.get("first_name",""), profile.get("last_name",""), title)
+        fname = Path(pdf_path).name
 
         if min_score > 0 and score < min_score and fit == "Low Fit":
             print_status("SKIPPED", f"score {score:.3f} < {min_score} (Low Fit)")
@@ -726,6 +730,8 @@ def process_job(page, context, row: dict, row_num: int,
             title, notes, profile_name, company, jd_text,
         )
         _print_resume_selection(title, company, fname, score, fit, keywords)
+        pdf_path = make_upload_copy(pdf_path, profile.get("first_name",""), profile.get("last_name",""), title)
+        fname = Path(pdf_path).name
 
         # Score gate
         if min_score > 0 and score < min_score and fit == "Low Fit":

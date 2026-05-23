@@ -250,7 +250,7 @@ def pick_resume(title: str, notes: str = "", profile: str = "muhammad",
     """
     exclude = exclude or set()
     if profile == "razia":
-        return _pick_razia(title, notes)
+        return _pick_razia(title, notes, jd_text)
     return _pick_muhammad(title, notes, company, jd_text, exclude)
 
 
@@ -305,6 +305,26 @@ def pick_resume_with_details(title: str, notes: str = "", profile: str = "muhamm
     return path, score, fit_label(score), keywords, fname
 
 
+def make_upload_copy(pdf_path: str, first_name: str, last_name: str, title: str) -> str:
+    """
+    Return path to a renamed copy of the resume with a professional filename.
+    Format: FirstName_LastName_Job_Title.pdf
+    Falls back to original path if copy fails.
+    """
+    import shutil as _shutil
+    try:
+        clean = re.sub(r"[^\w\s]", "", title or "").strip()
+        clean = re.sub(r"\s+", "_", clean)[:45]
+        fname = f"{first_name}_{last_name}_{clean}.pdf".strip("_")
+        tmp_dir = BASE_DIR / "output" / "temp_resumes"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        dest = tmp_dir / fname
+        _shutil.copy2(pdf_path, dest)
+        return str(dest)
+    except Exception:
+        return pdf_path
+
+
 def _find(folder: Path, filename: str, exclude: set):
     if filename in exclude:
         return None
@@ -312,14 +332,30 @@ def _find(folder: Path, filename: str, exclude: set):
     return str(path) if path.exists() else None
 
 
-def _pick_razia(title: str, notes: str) -> str:
+def _pick_razia(title: str, notes: str, jd_text: str = "") -> str:
     folder   = _resume_folder("razia")
+
+    # If we have a real JD, use TF-IDF (same as Muhammad's path)
+    if jd_text and _TFIDF_OK:
+        full_text = f"{title} {notes} {jd_text}"
+        ranked = score_resumes(full_text, "razia")
+        if ranked:
+            top3 = ranked[:3]
+            print(f"  [Razia] Top matches: " + ", ".join(f"{n}({s:.3f})" for n, s in top3))
+            for filename, score in ranked:
+                if score > 0.0:
+                    path = folder / filename
+                    if path.exists():
+                        return str(path)
+
+    # Keyword fallback (title/notes only — no JD available)
     haystack = (title + " " + notes).lower()
     for keywords, filename in _RAZIA_KEYWORD_MAP:
         if any(kw in haystack for kw in keywords):
             path = folder / filename
             if path.exists():
                 return str(path)
+
     default = folder / "RC6_IT_Security_Engineer.pdf"
     return str(default) if default.exists() else str(next(folder.glob("*.pdf")))
 
