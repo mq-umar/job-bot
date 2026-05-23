@@ -216,12 +216,15 @@ def print_status(tag: str, detail: str = ""):
 
 # ── Salary parsing (logging only) ─────────────────────────────────────────────
 
-_SALARY_TARGET = {"muhammad": 75_000, "razia": 110_000}
+# Fallback targets used only when profile doesn't define salary_minimum.
+_SALARY_TARGET_FALLBACK = {"muhammad": 75_000, "razia": 110_000}
 
-def parse_salary_label(text: str, profile_name: str) -> tuple[str, str]:
+def parse_salary_label(text: str, profile_name: str,
+                       profile_data: dict = None) -> tuple[str, str]:
     """
     Returns (parsed_salary_str, label) where label is
     above_target / at_target / below_target / not_listed.
+    Reads target from profile_data first, then falls back to _SALARY_TARGET_FALLBACK.
     """
     text = (text or "").replace(",", "")
     # Hourly detection
@@ -235,7 +238,11 @@ def parse_salary_label(text: str, profile_name: str) -> tuple[str, str]:
     if not annual:
         return "not_listed", "not_listed"
 
-    target = _SALARY_TARGET.get(profile_name, 75_000)
+    target = (
+        (profile_data.get("salary_minimum") or profile_data.get("salary_number"))
+        if profile_data else None
+    ) or _SALARY_TARGET_FALLBACK.get(profile_name, 75_000)
+
     label  = ("above_target" if annual > target * 1.05
               else "at_target" if annual >= target * 0.95
               else "below_target")
@@ -403,9 +410,9 @@ def _make_entry(profile_name: str, row: dict, status: str,
                 keywords: list, screenshot: str = "",
                 notes: str = "", salary_text: str = "",
                 field_log: list = None, apply_method: str = "",
-                final_url: str = "") -> dict:
+                final_url: str = "", profile_data: dict = None) -> dict:
     sal_parsed, sal_label = parse_salary_label(
-        salary_text or row.get("notes", ""), profile_name
+        salary_text or row.get("notes", ""), profile_name, profile_data
     )
     # Extract resume replacement metadata from field_log sentinel entries
     resume_replaced = "no"

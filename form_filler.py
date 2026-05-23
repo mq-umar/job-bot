@@ -496,6 +496,32 @@ def _profile_value(label_lower: str, profile: dict, profile_name: str,
     return None
 
 
+# ── EEO prefer-not helper ─────────────────────────────────────────────────────
+
+_PREFER_NOT_PHRASES = [
+    "prefer not to answer", "prefer not to say", "prefer not to disclose",
+    "decline to self-identify", "decline to disclose", "decline to answer",
+    "do not wish to provide", "choose not to disclose", "i don't wish to answer",
+    "not specified", "prefer not", "choose not to answer",
+]
+
+def _select_prefer_not(el, log: list, label: str) -> bool:
+    """Try to select a "Prefer not to answer" option in a select/radio element."""
+    try:
+        options = el.locator("option").all()
+        for opt in options:
+            text_low = opt.inner_text().strip().lower()
+            if any(phrase in text_low for phrase in _PREFER_NOT_PHRASES):
+                el.select_option(label=opt.inner_text().strip())
+                log.append({"field": label, "status": "filled",
+                             "value": opt.inner_text().strip()})
+                return True
+    except Exception:
+        pass
+    log.append({"field": label, "status": "skipped", "note": "prefer_not: no opt found"})
+    return False
+
+
 # ── Select / radio helpers ────────────────────────────────────────────────────
 
 def _best_option(select_el, answer: str) -> bool:
@@ -717,6 +743,17 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
                 el.click(); el.fill(str(_cv)); human_delay(0.2, 0.5)
                 log.append({"field": label_text, "status": "filled", "value": str(_cv)})
                 continue
+            if _sf["action"] == "prefer_not":
+                # EEO voluntary: use profile value if set, else leave blank
+                value = _profile_value(label_lower, profile, profile_name,
+                                       resume_name, company, title)
+                if value:
+                    el.click(); el.fill(str(value)); human_delay(0.2, 0.5)
+                    log.append({"field": label_text, "status": "filled", "value": str(value)})
+                else:
+                    log.append({"field": label_text, "status": "skipped",
+                                 "note": "EEO voluntary — no profile value, leaving blank"})
+                continue
 
             # General lookup
             value = _profile_value(label_lower, profile, profile_name,
@@ -776,8 +813,21 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
                              "value": _sf["value"] if ok else "",
                              "note":  "" if ok else "no matching option"})
                 continue
+            if _sf["action"] == "prefer_not":
+                # EEO voluntary: use profile value if set, otherwise "Prefer not to answer"
+                profile_val = _profile_value(label_lower, profile, profile_name,
+                                             resume_name, company, title)
+                if profile_val:
+                    ok = _best_option(el, profile_val)
+                    log.append({"field": label_text,
+                                 "status": "filled" if ok else "skipped",
+                                 "value": profile_val if ok else "",
+                                 "note":  "" if ok else "no matching option"})
+                else:
+                    _select_prefer_not(el, log, label_text)
+                continue
 
-            # EEO by element ID keywords
+            # EEO by element ID keywords (legacy path, after prefer_not handling)
             for kw, ans in [("gender",    profile.get("gender", "")),
                              ("race",      profile.get("ethnicity", "")),
                              ("ethnicity", profile.get("ethnicity", ""))]:
@@ -832,9 +882,17 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
                 log.append({"field": "_meta_sensitive_pause", "status": "pause",
                              "value": _sf["reason"]})
                 continue
-            value = (_sf["value"] if _sf["action"] == "confirmed"
-                     else _profile_value(legend_lower, profile, profile_name,
-                                         resume_name, company, title))
+            if _sf["action"] == "prefer_not":
+                value = _profile_value(legend_lower, profile, profile_name,
+                                       resume_name, company, title)
+                if not value:
+                    log.append({"field": f"radio:{name}", "status": "skipped",
+                                 "note": "EEO voluntary — no profile value, leaving blank"})
+                    continue
+            else:
+                value = (_sf["value"] if _sf["action"] == "confirmed"
+                         else _profile_value(legend_lower, profile, profile_name,
+                                             resume_name, company, title))
             if value is not None:
                 ok = _fill_radio(page, name, value, log)
                 if not ok:

@@ -19,7 +19,7 @@ class StartConfig(BaseModel):
     limit: int = 25
     discover: bool = True
     companies_only: bool = False
-    tier_max: int = 4
+    tier_max: int = 3
     min_score: float = 0.0
     dry_run: bool = False
     start_id: int = 1

@@ -87,6 +87,21 @@ _PAUSE_COMPILED = [
 ]
 
 
+# ── EEO voluntary disclosure ──────────────────────────────────────────────────
+# These fields are legally voluntary. Default to "Prefer not to answer" unless
+# the candidate has explicitly set a value in their profile.
+
+_EEO_VOLUNTARY = re.compile(
+    r"\b("
+    r"race\b|ethnicity\b|ethnic\s+origin|national\s+origin"
+    r"|gender\b|gender\s+identity\b|sex\b(?!\s*offend)"
+    r"|disability\s*(status)?\b|disabled\b"
+    r"|veteran\s*(status)?\b|military\s+status\b"
+    r")\b",
+    re.I,
+)
+
+
 # ── Criminal history — standard wording auto-fill ─────────────────────────────
 # Only these exact patterns are considered "standard felony questions"
 # that the bot may answer with the confirmed fact (No).
@@ -109,9 +124,9 @@ _CRIME_COMPILED = [re.compile(p, re.I) for p in _CRIME_STANDARD_PATTERNS]
 # ── Work authorization — safe auto-fill ───────────────────────────────────────
 
 _WORK_AUTH_PATTERNS: list[str] = [
-    r"(legally |lawfully )?(authorized|eligible) to work (in (the )?u\.?s\.?|united states)",
-    r"(legal )?right to work (in (the )?u\.?s\.?|united states)",
-    r"eligible to work (in (the )?u\.?s\.?|united states)",
+    r"(legally |lawfully )?(authorized|eligible) to work (in (the )?(u\.?s\.?|united states))",
+    r"(legal )?right to work (in (the )?(u\.?s\.?|united states))",
+    r"eligible to work (in (the )?(u\.?s\.?|united states))",
     r"work authorization",
     r"employment (authorization|eligibility)",
 ]
@@ -201,57 +216,70 @@ def classify_field(label: str) -> dict:
         "reason":  str           → human-readable explanation
         "value":   str | None    → pre-filled value for "confirmed" actions
       }
+
+    Ordering (most specific first):
+      1. Bot traps → skip  (catch before anything else)
+      2. Confirmed facts → confirmed  (standard work-auth/felony BEFORE broad pause
+         patterns so "any felony conviction" isn't caught by the "broad scope" pauser)
+      3. Hard pause fields → pause  (SSN, DOB, misdemeanor, broad criminal, etc.)
+      4. EEO voluntary → prefer_not
+      5. Everything else → fill
     """
     label_lower = label.lower().strip()
 
-    # ── Bot trap detection ────────────────────────────────────────────────────
+    # ── 1. Bot trap detection ─────────────────────────────────────────────────
     if _BOT_TRAP_PATTERNS.search(label_lower):
         return {"action": "skip", "reason": "Bot trap / AI detection question detected — skipping",
                 "value": None}
 
-    # ── Hard pause fields — never auto-fill ──────────────────────────────────
-    for pattern, description in _PAUSE_COMPILED:
-        if pattern.search(label_lower):
-            return {"action": "pause",
-                    "reason": f"Sensitive field detected: {description}",
-                    "value": None}
-
-    # ── Confirmed auto-fill — work authorization ──────────────────────────────
+    # ── 2. Confirmed auto-fill facts (checked BEFORE broad pause patterns) ────
+    # Work authorization
     for pattern in _WORK_AUTH_COMPILED:
         if pattern.search(label_lower):
             return {"action": "confirmed",
                     "reason": "Work authorization — confirmed: Yes",
                     "value": "Yes"}
 
-    # ── Confirmed auto-fill — sponsorship ────────────────────────────────────
+    # Visa sponsorship
     for pattern in _SPONSORSHIP_COMPILED:
         if pattern.search(label_lower):
             return {"action": "confirmed",
                     "reason": "Visa sponsorship — confirmed: No",
                     "value": "No"}
 
-    # ── Confirmed auto-fill — US citizenship ──────────────────────────────────
+    # US citizenship
     for pattern in _CITIZEN_COMPILED:
         if pattern.search(label_lower):
             return {"action": "confirmed",
                     "reason": "US citizenship — confirmed: Yes",
                     "value": "Yes"}
 
-    # ── Confirmed auto-fill — standard felony question ────────────────────────
+    # Standard felony (must come before broad "any felony" pause pattern)
     for pattern in _FELONY_COMPILED:
         if pattern.search(label_lower):
             return {"action": "confirmed",
                     "reason": "Standard felony question — confirmed: No conviction",
                     "value": "No"}
 
-    # ── Confirmed auto-fill — standard crime conviction ───────────────────────
+    # Standard crime conviction
     for pattern in _CRIME_COMPILED:
         if pattern.search(label_lower):
-            # Double-check this doesn't match any expanded/unusual wording
-            # (the regex already excludes misdemeanor/any/other via negative lookahead)
             return {"action": "confirmed",
                     "reason": "Standard criminal conviction question — confirmed: No",
                     "value": "No"}
+
+    # ── 3. Hard pause fields — never auto-fill ────────────────────────────────
+    for pattern, description in _PAUSE_COMPILED:
+        if pattern.search(label_lower):
+            return {"action": "pause",
+                    "reason": f"Sensitive field detected: {description}",
+                    "value": None}
+
+    # ── 4. EEO voluntary disclosure — prefer "Prefer not to answer" ──────────
+    if _EEO_VOLUNTARY.search(label_lower):
+        return {"action": "prefer_not",
+                "reason": "EEO voluntary field — defaulting to Prefer not to answer",
+                "value": None}
 
     return {"action": "fill", "reason": "Standard field", "value": None}
 
