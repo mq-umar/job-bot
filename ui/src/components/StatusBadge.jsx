@@ -20,6 +20,9 @@ const STATUS = {
   'skipped_low_fit':     'bg-slate-500/20 text-slate-400 border-slate-500/30',
   'already_applied':     'bg-slate-500/20 text-slate-400 border-slate-500/30',
   'closed':              'bg-slate-500/20 text-slate-400 border-slate-500/30',
+  'needs_review':        'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+  'skipped_scam':        'bg-red-500/20 text-red-400 border-red-500/30',
+  'skipped_low_salary':  'bg-slate-500/20 text-slate-400 border-slate-500/30',
 }
 
 export default function StatusBadge({ type, value }) {

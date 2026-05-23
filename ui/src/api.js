@@ -44,7 +44,8 @@ export const api = {
   },
   addJob:     (b)      => req('POST', '/jobs/add', b),
   deleteJob:  (id)     => req('DELETE',`/jobs/${id}`),
-  getStats:   (p)      => req('GET',  '/jobs/stats' + (p ? `?profile=${p}` : '')),
+  getStats:        (p) => req('GET',  '/jobs/stats' + (p ? `?profile=${p}` : '')),
+  getReviewQueue:  (p) => req('GET',  '/jobs/review_queue' + (p ? `?profile=${p}` : '')),
 
   // Resumes
   listResumes:(p)      => req('GET',  `/resumes/${p}`),

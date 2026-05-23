@@ -165,6 +165,31 @@ async def import_jobs(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/review_queue")
+def get_review_queue(profile: Optional[str] = Query(None)):
+    """Return applications flagged for human review."""
+    path = OUTPUT_DIR / "needs_review.jsonl"
+    if not path.exists():
+        return []
+    records = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                    if profile and r.get("profile") != profile:
+                        continue
+                    records.append(r)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return records
+
+
 @router.get("/stats")
 def get_stats(profile: Optional[str] = Query(None)):
     results = _read_results(profile)

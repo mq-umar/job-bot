@@ -9,6 +9,12 @@ import time
 from pathlib import Path
 from typing import Optional
 
+try:
+    from safety import classify_field
+except ImportError:
+    def classify_field(label: str) -> dict:  # type: ignore[misc]
+        return {"action": "fill", "reason": "safety module unavailable", "value": None}
+
 # ── Skills lookup (resume filename → 2-3 relevant skills phrase) ──────────────
 
 SKILLS_BY_RESUME = {
@@ -709,6 +715,21 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
                 log.append({"field": label_text, "status": "filled", "value": value})
                 continue
 
+            # Safety classification — pause sensitive fields, skip bot traps, use confirmed facts
+            _sf = classify_field(label_text)
+            if _sf["action"] == "skip":
+                log.append({"field": label_text, "status": "skipped", "note": "bot_trap"})
+                continue
+            if _sf["action"] == "pause":
+                log.append({"field": "_meta_sensitive_pause", "status": "pause",
+                             "value": _sf["reason"]})
+                continue
+            if _sf["action"] == "confirmed":
+                _cv = _sf["value"]
+                el.click(); el.fill(str(_cv)); human_delay(0.2, 0.5)
+                log.append({"field": label_text, "status": "filled", "value": str(_cv)})
+                continue
+
             # General lookup
             value = _profile_value(label_lower, profile, profile_name,
                                    resume_name, company, title)
@@ -719,11 +740,10 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
             # Format date values for date inputs
             input_type = (el.get_attribute("type") or "text").lower()
             if input_type == "date" and value:
-                # Try to parse graduation date to YYYY-MM-DD
                 import re as _re
                 m = _re.search(r'(\d{4})', str(value))
                 if m:
-                    value = f"{m.group(1)}-05-01"  # default to May 1
+                    value = f"{m.group(1)}-05-01"
 
             el.click(); el.fill(str(value)); human_delay(0.2, 0.5)
             log.append({"field": label_text, "status": "filled",
@@ -749,6 +769,23 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
                 log.append({"field": label_text,
                              "status": "filled" if ok else "skipped",
                              "value": value if ok else "",
+                             "note":  "" if ok else "no matching option"})
+                continue
+
+            # Safety classification
+            _sf = classify_field(label_text)
+            if _sf["action"] == "skip":
+                log.append({"field": label_text, "status": "skipped", "note": "bot_trap"})
+                continue
+            if _sf["action"] == "pause":
+                log.append({"field": "_meta_sensitive_pause", "status": "pause",
+                             "value": _sf["reason"]})
+                continue
+            if _sf["action"] == "confirmed":
+                ok = _best_option(el, _sf["value"])
+                log.append({"field": label_text,
+                             "status": "filled" if ok else "skipped",
+                             "value": _sf["value"] if ok else "",
                              "note":  "" if ok else "no matching option"})
                 continue
 
@@ -800,8 +837,16 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
                 legend = name.replace("_", " ")
 
             legend_lower = legend.lower()
-            value = _profile_value(legend_lower, profile, profile_name,
-                                   resume_name, company, title)
+            _sf = classify_field(legend)
+            if _sf["action"] == "skip":
+                continue
+            if _sf["action"] == "pause":
+                log.append({"field": "_meta_sensitive_pause", "status": "pause",
+                             "value": _sf["reason"]})
+                continue
+            value = (_sf["value"] if _sf["action"] == "confirmed"
+                     else _profile_value(legend_lower, profile, profile_name,
+                                         resume_name, company, title))
             if value is not None:
                 ok = _fill_radio(page, name, value, log)
                 if not ok:
@@ -831,8 +876,19 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
                              "value": "checked (agreement)"})
                 continue
 
-            value = _profile_value(label_lower, profile, profile_name,
-                                   resume_name, company, title)
+            # Safety classification
+            _sf = classify_field(label_text)
+            if _sf["action"] == "skip":
+                log.append({"field": label_text, "status": "skipped", "note": "bot_trap"})
+                continue
+            if _sf["action"] == "pause":
+                log.append({"field": "_meta_sensitive_pause", "status": "pause",
+                             "value": _sf["reason"]})
+                continue
+
+            value = (_sf["value"] if _sf["action"] == "confirmed"
+                     else _profile_value(label_lower, profile, profile_name,
+                                         resume_name, company, title))
             if value is not None and str(value).lower() in ("yes", "true", "1"):
                 if not el.is_checked():
                     el.click()
@@ -861,8 +917,16 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
             if _is_salary_label(label_lower):
                 value = _salary_value(el, profile, label_lower)
             else:
-                value = _profile_value(label_lower, profile, profile_name,
-                                       resume_name, company, title)
+                _sf = classify_field(label_text)
+                if _sf["action"] == "skip":
+                    continue
+                if _sf["action"] == "pause":
+                    log.append({"field": "_meta_sensitive_pause", "status": "pause",
+                                 "value": _sf["reason"]})
+                    continue
+                value = (_sf["value"] if _sf["action"] == "confirmed"
+                         else _profile_value(label_lower, profile, profile_name,
+                                             resume_name, company, title))
             if value is None:
                 continue
 
@@ -950,8 +1014,16 @@ def _scan_and_fill(page, profile: dict, profile_name: str, resume_name: str,
                 continue
             seen_aria_radio.add(group_key)
 
-            value = _profile_value(group_key, profile, profile_name,
-                                   resume_name, company, title)
+            _sf = classify_field(group_label)
+            if _sf["action"] == "skip":
+                continue
+            if _sf["action"] == "pause":
+                log.append({"field": "_meta_sensitive_pause", "status": "pause",
+                             "value": _sf["reason"]})
+                continue
+            value = (_sf["value"] if _sf["action"] == "confirmed"
+                     else _profile_value(group_key, profile, profile_name,
+                                         resume_name, company, title))
             if value is None:
                 continue
 

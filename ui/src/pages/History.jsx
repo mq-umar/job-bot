@@ -71,6 +71,9 @@ export default function History() {
             <option value="dry_run">Dry run</option>
             <option value="skipped_manual">Skipped (manual)</option>
             <option value="skipped_low_fit">Skipped (low fit)</option>
+            <option value="skipped_low_salary">Skipped (salary)</option>
+            <option value="skipped_scam">Skipped (scam)</option>
+            <option value="needs_review">Needs review</option>
             <option value="closed">Closed</option>
           </select>
           <button onClick={exportCSV} disabled={!history.length} className="flex items-center gap-2 px-4 py-2 border border-[#2a2d3e] text-slate-300 hover:text-slate-100 rounded-lg text-sm transition-colors disabled:opacity-40">

@@ -53,9 +53,10 @@ export default function Dashboard() {
   const [showStart,   setShowStart]   = useState(false)
   const [captchaJob,  setCaptchaJob]  = useState(null)
   const [reviewJob,   setReviewJob]   = useState(null)
-  const [todayCount,  setTodayCount]  = useState(0)
-  const [weekCount,   setWeekCount]   = useState(0)
-  const [successRate, setSuccessRate] = useState(0)
+  const [todayCount,    setTodayCount]    = useState(0)
+  const [weekCount,     setWeekCount]     = useState(0)
+  const [successRate,   setSuccessRate]   = useState(0)
+  const [reviewCount,   setReviewCount]   = useState(0)
   const wsRef   = useRef(null)
   const logEnd  = useRef(null)
 
@@ -97,6 +98,7 @@ export default function Dashboard() {
         setSuccessRate(rows.length > 0 ? Math.round((submitted / rows.length) * 100) : 0)
       })
       .catch(() => {})
+    api.getReviewQueue().then(q => setReviewCount(q.length)).catch(() => {})
 
     return () => {
       clearInterval(interval)
@@ -193,12 +195,13 @@ export default function Dashboard() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         {[
           { label: 'Applied Today',  value: todayCount,  color: 'text-primary' },
           { label: 'This Week',      value: weekCount,   color: 'text-blue-400' },
           { label: 'Success Rate',   value: `${successRate}%`, color: 'text-success' },
           { label: 'Session Jobs',   value: botStatus.jobs_applied, color: 'text-slate-100' },
+          { label: 'Needs Review',   value: reviewCount, color: reviewCount > 0 ? 'text-yellow-400' : 'text-slate-500' },
         ].map(({ label, value, color }) => (
           <div key={label} className="bg-[#1a1d27] border border-[#2a2d3e] rounded-xl p-4">
             <p className="text-xs text-slate-500 uppercase tracking-wide">{label}</p>

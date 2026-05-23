@@ -45,6 +45,17 @@ from form_filler import (
 )
 from job_finder import append_to_jobs_csv, discover_jobs
 from resume_selector import fit_label, pick_resume_with_details, verify_resumes
+try:
+    from safety import (
+        has_sensitive_flags, is_scam_job, check_company_cooldown,
+        is_salary_below_minimum, save_needs_review,
+    )
+except ImportError:
+    def has_sensitive_flags(fl):       return []                               # type: ignore[misc]
+    def is_scam_job(*a, **k):          return False, []                        # type: ignore[misc]
+    def check_company_cooldown(*a, **k): return False, None                    # type: ignore[misc]
+    def is_salary_below_minimum(*a, **k): return False, ""                     # type: ignore[misc]
+    def save_needs_review(*a, **k):    pass                                    # type: ignore[misc]
 
 console = Console()
 
@@ -232,6 +243,15 @@ def parse_salary_label(text: str, profile_name: str) -> tuple[str, str]:
 
 
 # ── Profile loading ───────────────────────────────────────────────────────────
+
+def _load_settings() -> dict:
+    path = BASE_DIR / "config" / "settings.json"
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
 
 def load_profile(name: str) -> dict:
     for path in [BASE_DIR / "config" / f"{name}_profile.json",
@@ -499,6 +519,15 @@ def process_job(page, context, row: dict, row_num: int,
         stats.duplicates += 1
         return "continue"
 
+    # ── 1c. Company cooldown check ───────────────────────────────────────────
+    _cooldown_days = _load_settings().get("company_cooldown_days", 30)
+    if _cooldown_days > 0:
+        _on_cd, _cd_date = check_company_cooldown(company, profile_name, _cooldown_days)
+        if _on_cd:
+            print_status("SKIPPED", f"company cooldown — last submitted {_cd_date}")
+            stats.duplicates += 1
+            return "continue"
+
     # ── 2. Navigate ──────────────────────────────────────────────────────────
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -566,6 +595,26 @@ def process_job(page, context, row: dict, row_num: int,
                 applied_urls.add(norm_url)
                 return "continue"
 
+            # Scam detection
+            _scam, _scam_r = is_scam_job(company, title, jd_text, url)
+            if _scam:
+                print_status("SKIPPED", f"scam: {'; '.join(_scam_r[:2])}")
+                log_result(profile_name, _make_entry(
+                    profile_name, row, "skipped_scam", pdf_path, score, fit,
+                    keywords, notes=f"scam: {'; '.join(_scam_r)}"))
+                applied_urls.add(norm_url)
+                return "continue"
+
+            # Salary minimum enforcement
+            _sal_low, _sal_r = is_salary_below_minimum(jd_text, notes, profile)
+            if _sal_low:
+                print_status("SKIPPED", _sal_r)
+                log_result(profile_name, _make_entry(
+                    profile_name, row, "skipped_low_salary", pdf_path, score, fit,
+                    keywords, notes=_sal_r))
+                applied_urls.add(norm_url)
+                return "continue"
+
             indeed_log: list = []
             mode = fill_indeed_easy_apply(
                 page, context, profile, profile_name, pdf_path,
@@ -618,6 +667,26 @@ def process_job(page, context, row: dict, row_num: int,
             applied_urls.add(norm_url)
             return "continue"
 
+        # Scam detection
+        _scam, _scam_r = is_scam_job(company, title, jd_text, url)
+        if _scam:
+            print_status("SKIPPED", f"scam: {'; '.join(_scam_r[:2])}")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_scam", pdf_path, score, fit,
+                keywords, notes=f"scam: {'; '.join(_scam_r)}"))
+            applied_urls.add(norm_url)
+            return "continue"
+
+        # Salary minimum enforcement
+        _sal_low, _sal_r = is_salary_below_minimum(jd_text, notes, profile)
+        if _sal_low:
+            print_status("SKIPPED", _sal_r)
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_low_salary", pdf_path, score, fit,
+                keywords, notes=_sal_r))
+            applied_urls.add(norm_url)
+            return "continue"
+
         linkedin_log: list = []
         mode, redirect_page = handle_linkedin_apply(
             page, context, profile, profile_name, pdf_path,
@@ -666,6 +735,27 @@ def process_job(page, context, row: dict, row_num: int,
                 score, fit, keywords, notes=f"score {score:.3f}"))
             applied_urls.add(norm_url)
             return "continue"
+
+        # Scam detection
+        _scam, _scam_r = is_scam_job(company, title, jd_text, url)
+        if _scam:
+            print_status("SKIPPED", f"scam: {'; '.join(_scam_r[:2])}")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_scam", pdf_path, score, fit,
+                keywords, notes=f"scam: {'; '.join(_scam_r)}"))
+            applied_urls.add(norm_url)
+            return "continue"
+
+        # Salary minimum enforcement
+        _sal_low, _sal_r = is_salary_below_minimum(jd_text, notes, profile)
+        if _sal_low:
+            print_status("SKIPPED", _sal_r)
+            log_result(profile_name, _make_entry(
+                profile_name, row, "skipped_low_salary", pdf_path, score, fit,
+                keywords, notes=_sal_r))
+            applied_urls.add(norm_url)
+            return "continue"
+
     # (if pdf_path already set by LinkedIn/Indeed block, score/fit/keywords are
     # already correct — no else branch needed)
 
@@ -840,6 +930,33 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
         for e in field_log
     )
     source_tier = row.get("source_tier", 0)
+
+    # ── Sensitive field check → route to human review queue ──────────────────
+    _sensitive_reasons = has_sensitive_flags(field_log)
+    if _sensitive_reasons:
+        save_needs_review(profile_name, {
+            "company": company, "title": title, "job_url": url, "platform": platform,
+            "selected_resume": Path(pdf_path).name if pdf_path else "",
+            "resume_score": f"{score:.2f}", "fit_label": fit,
+        }, _sensitive_reasons)
+        console.print("[bold red]  SENSITIVE FIELDS DETECTED — added to review queue:[/bold red]")
+        for _r in _sensitive_reasons:
+            console.print(f"    • {_r}")
+        if not dry_run and not review:
+            while True:
+                ans = input("  Submit anyway? (y/n/q): ").strip().lower()
+                if ans in ("y", "n", "q"):
+                    break
+            watchdog.ping()
+            if ans == "q":
+                return "stop"
+            if ans == "n":
+                print_status("SKIPPED", "needs review — sensitive fields detected")
+                log_result(profile_name, _make_entry(
+                    profile_name, row, "needs_review", pdf_path, score, fit, keywords,
+                    screenshot=scr_filled, field_log=field_log, apply_method=apply_method))
+                applied_urls.add(norm_url)
+                return "continue"
 
     if dry_run:
         print_status("DRY_RUN", "would submit here")
