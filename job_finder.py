@@ -37,35 +37,69 @@ SALARY_MIN = {
     "razia":    110_000,
 }
 
-# Tier 1 — direct company career page search URLs ({query} replaced with URL-encoded terms)
-# URLs verified to return job listings without requiring login.
+# Open-apply ATS platforms — no company-specific account required to submit an application.
+# Discovery only queues jobs whose apply URL is hosted on one of these domains.
+_OPEN_ATS_DOMAINS = {
+    "greenhouse.io",
+    "lever.co",
+    "myworkdayjobs.com",
+    "workday.com",
+    "ashbyhq.com",
+    "smartrecruiters.com",
+    "icims.com",
+    "taleo.net",
+    "brassring.com",
+    "jobvite.com",
+    "bamboohr.com",
+    "breezy.hr",
+    "recruitee.com",
+    "workable.com",
+    "applytojob.com",
+    "paylocity.com",
+    "indeed.com",
+    "linkedin.com",
+}
+
+
+def _is_open_ats_url(url: str) -> bool:
+    """Return True if URL is hosted on a known open-apply ATS (no company login needed)."""
+    try:
+        netloc = urlparse(url).netloc.lower().lstrip("www.")
+        return any(netloc == d or netloc.endswith("." + d) for d in _OPEN_ATS_DOMAINS)
+    except Exception:
+        return False
+
+
+# Tier 1 — direct Greenhouse / Lever / Workday job board URLs for target companies.
+# These are open-apply platforms: no company-specific account required.
 PRIORITY_COMPANIES = {
     "muhammad": [
-        {"name": "Microsoft",      "url": "https://careers.microsoft.com/global/en/search-results?q={query}&l=United+States"},
-        {"name": "Google",         "url": "https://careers.google.com/jobs/results/?q={query}&location=New+York"},
-        {"name": "Amazon",         "url": "https://amazon.jobs/en/search?query={query}"},
-        {"name": "IBM",            "url": "https://careers.ibm.com/job/search?q={query}&country=US"},
-        {"name": "Verizon",        "url": "https://mycareer.verizon.com/jobs/search/?keyword={query}&location=New+York"},
-        {"name": "JPMorgan Chase", "url": "https://careers.jpmorgan.com/us/en/jobs?search={query}"},
-        {"name": "Bloomberg",      "url": "https://careers.bloomberg.com/job/search?q={query}"},
-        {"name": "Broadridge",     "url": "https://jobs.broadridge.com/search/?q={query}"},
-        {"name": "Northwell",      "url": "https://jobs.northwell.edu/search-jobs/{query}/287/1"},
-        {"name": "NBC Universal",  "url": "https://jobs.nbcuniversal.com/search/?q={query}"},
-        {"name": "Morgan Stanley", "url": "https://morganstanleycareers.com/search/?q={query}"},
-        {"name": "Spotify",        "url": "https://boards.greenhouse.io/spotify/jobs"},
+        {"name": "Spotify",    "url": "https://boards.greenhouse.io/spotify"},
+        {"name": "Cloudflare", "url": "https://boards.greenhouse.io/cloudflare"},
+        {"name": "Datadog",    "url": "https://boards.greenhouse.io/datadog"},
+        {"name": "MongoDB",    "url": "https://boards.greenhouse.io/mongodb"},
+        {"name": "Twilio",     "url": "https://boards.greenhouse.io/twilio"},
+        {"name": "Squarespace","url": "https://boards.greenhouse.io/squarespace"},
+        {"name": "Etsy",       "url": "https://boards.greenhouse.io/etsy"},
+        {"name": "Stripe",     "url": "https://jobs.lever.co/stripe"},
+        {"name": "Figma",      "url": "https://boards.greenhouse.io/figma"},
+        {"name": "Two Sigma",  "url": "https://boards.greenhouse.io/twosigma"},
+        {"name": "Palantir",   "url": "https://jobs.lever.co/palantir"},
+        {"name": "Okta",       "url": "https://boards.greenhouse.io/okta"},
     ],
     "razia": [
-        {"name": "CrowdStrike",        "url": "https://careers.crowdstrike.com/us/en/search-results?q={query}"},
-        {"name": "Palo Alto Networks", "url": "https://jobs.paloaltonetworks.com/jobs/search?q={query}"},
-        {"name": "Tenable",            "url": "https://careers.tenable.com/jobs?q={query}"},
-        {"name": "Microsoft",          "url": "https://careers.microsoft.com/global/en/search-results?q={query}+security"},
-        {"name": "IBM",                "url": "https://careers.ibm.com/job/search?q={query}+security&country=US"},
-        {"name": "JPMorgan Chase",     "url": "https://careers.jpmorgan.com/us/en/jobs?search={query}"},
-        {"name": "Bloomberg",          "url": "https://careers.bloomberg.com/job/search?q={query}"},
-        {"name": "Northwell",          "url": "https://jobs.northwell.edu/search-jobs/{query}/287/1"},
-        {"name": "Morgan Stanley",     "url": "https://morganstanleycareers.com/search/?q={query}"},
-        {"name": "Deloitte",           "url": "https://apply.deloitte.com/careers/SearchJobs/{query}"},
-        {"name": "MSKCC",              "url": "https://careers.mskcc.org/search/?q={query}"},
+        {"name": "Snyk",            "url": "https://boards.greenhouse.io/snyk"},
+        {"name": "Wiz",             "url": "https://boards.greenhouse.io/wizsecurity"},
+        {"name": "Recorded Future", "url": "https://boards.greenhouse.io/recordedfuture"},
+        {"name": "Arctic Wolf",     "url": "https://boards.greenhouse.io/arcticwolf"},
+        {"name": "Abnormal",        "url": "https://boards.greenhouse.io/abnormalsecurity"},
+        {"name": "Huntress",        "url": "https://boards.greenhouse.io/huntresslabs"},
+        {"name": "Tenable",         "url": "https://boards.greenhouse.io/tenable"},
+        {"name": "CrowdStrike",     "url": "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers"},
+        {"name": "Palo Alto",       "url": "https://paloaltonetworks.wd3.myworkdayjobs.com/en-US/External"},
+        {"name": "Rapid7",          "url": "https://boards.greenhouse.io/rapid7"},
+        {"name": "Lacework",        "url": "https://boards.greenhouse.io/lacework"},
+        {"name": "Cybereason",      "url": "https://boards.greenhouse.io/cybereason"},
     ],
 }
 
@@ -238,20 +272,29 @@ def _scrape_linkedin(page, url: str, existing: set, limit: int = 20) -> list[dic
 
 
 def _scrape_google_jobs(page, url: str, existing: set, limit: int = 10) -> list[dict]:
-    """Extract job links from a Google Jobs search result page."""
+    """Extract job links from a Google Jobs search result page — only open-ATS URLs."""
     found = []
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         time.sleep(3)
 
-        # Google Jobs links appear as anchor tags pointing to company sites
-        for sel in ["a[href*='greenhouse.io']", "a[href*='lever.co']",
-                    "a[href*='workday']", "a[href*='linkedin.com/jobs']"]:
+        # Build selectors from the open ATS domain list
+        ats_selectors = [
+            f"a[href*='{d}']" for d in [
+                "greenhouse.io", "lever.co", "myworkdayjobs.com",
+                "ashbyhq.com", "smartrecruiters.com", "icims.com",
+                "jobvite.com", "bamboohr.com", "workable.com",
+                "linkedin.com/jobs", "indeed.com/viewjob",
+            ]
+        ]
+        for sel in ats_selectors:
             try:
                 links = page.locator(sel).all()
                 for link in links[:limit]:
                     href = link.get_attribute("href") or ""
                     if not href or href in existing:
+                        continue
+                    if not _is_open_ats_url(href):
                         continue
                     title = link.inner_text(timeout=500).strip()[:120]
                     if title:
@@ -361,6 +404,11 @@ def _scrape_company_careers(page, company: dict, search_terms: dict,
     except Exception as e:
         print(f"    Career page error ({name}): {e}")
 
+    # Only keep URLs on open-apply ATS platforms
+    before = len(found)
+    found = [j for j in found if _is_open_ats_url(j["url"])]
+    if before and not found:
+        print(f"      (no open-ATS links found on {name} — skipping)")
     return found
 
 
@@ -505,14 +553,14 @@ def _all_known_urls(profile_name: str) -> set:
 
 def discover_jobs(page, context, profile_name: str, applied_urls: set,
                   max_per_search: int = 20,
-                  tier_max: int = 4,
+                  tier_max: int = 3,
                   companies_only: bool = False):
     """
-    Tiered job discovery:
-      Tier 1 — direct company career pages (highest priority)
-      Tier 2 — Indeed
-      Tier 3 — LinkedIn Easy Apply
-      Tier 4 — Google Jobs
+    Tiered job discovery (all sources require no company-specific login):
+      Tier 1 — Indeed
+      Tier 2 — LinkedIn Easy Apply
+      Tier 3 — Google Jobs (open-ATS links only)
+      Tier 4 — Direct Greenhouse / Lever / Workday company boards
 
     Returns new job dicts with source_tier + source fields, deduped cross-platform.
     """
@@ -522,13 +570,54 @@ def discover_jobs(page, context, profile_name: str, applied_urls: set,
     print(f"\n  Reading {profile_name}'s resumes to generate search queries...")
     search_terms = extract_search_terms(profile_name)
 
-    # Build search queries once — used by Tier 3 (LinkedIn) and Tier 4 (Google)
+    # Build search queries once — used by Tier 2 (LinkedIn) and Tier 3 (Google)
     queries: list = []
 
-    # ── Tier 1: Direct company career pages ──────────────────────────────────
-    if tier_max >= 1:
+    # ── Tier 1: Indeed ────────────────────────────────────────────────────────
+    if tier_max >= 1 and not companies_only:
+        print(f"\n  [Tier 1] Searching Indeed...")
+        batch = _scrape_indeed(page, search_terms, existing, max_per_search)
+        for j in batch:
+            j.setdefault("source_tier", 1)
+            j.setdefault("source", "indeed")
+        all_jobs.extend(batch)
+        print(f"    + {len(batch)} found")
+
+    # ── Tier 2: LinkedIn Easy Apply ───────────────────────────────────────────
+    if tier_max >= 2 and not companies_only:
+        queries = build_search_queries(search_terms)
+        li_queries = [q for q in queries if q["platform"] == "linkedin"]
+        print(f"\n  [Tier 2] Searching LinkedIn ({len(li_queries)} queries)...")
+        for q in li_queries:
+            print(f"    {q['query']} ...")
+            batch = _scrape_linkedin(page, q["url"], existing, max_per_search)
+            for j in batch:
+                j["source_tier"] = 2
+                j["source"]      = "linkedin"
+            all_jobs.extend(batch)
+            if batch:
+                print(f"      + {len(batch)} found")
+
+    # ── Tier 3: Google Jobs (open-ATS links only) ─────────────────────────────
+    if tier_max >= 3 and not companies_only:
+        if not queries:
+            queries = build_search_queries(search_terms)
+        goog_queries = [q for q in queries if q["platform"] == "google"]
+        print(f"\n  [Tier 3] Searching Google Jobs ({len(goog_queries)} queries)...")
+        for q in goog_queries:
+            print(f"    {q['query']} ...")
+            batch = _scrape_google_jobs(page, q["url"], existing, max_per_search)
+            for j in batch:
+                j["source_tier"] = 3
+                j["source"]      = "google_jobs"
+            all_jobs.extend(batch)
+            if batch:
+                print(f"      + {len(batch)} found")
+
+    # ── Tier 4: Direct ATS company boards (Greenhouse / Lever / Workday) ──────
+    if tier_max >= 4 or companies_only:
         companies = PRIORITY_COMPANIES.get(profile_name, [])
-        print(f"\n  [Tier 1] Searching {len(companies)} company career pages...")
+        print(f"\n  [Tier 4] Searching {len(companies)} ATS company boards...")
         for company in companies:
             print(f"    {company['name']} ...")
             batch = _scrape_company_careers(page, company, search_terms,
@@ -537,47 +626,6 @@ def discover_jobs(page, context, profile_name: str, applied_urls: set,
             if batch:
                 print(f"      + {len(batch)} found")
             time.sleep(random.uniform(1.0, 2.0))
-
-    # ── Tier 2: Indeed ────────────────────────────────────────────────────────
-    if tier_max >= 2 and not companies_only:
-        print(f"\n  [Tier 2] Searching Indeed...")
-        batch = _scrape_indeed(page, search_terms, existing, max_per_search)
-        for j in batch:
-            j.setdefault("source_tier", 2)
-            j.setdefault("source", "indeed")
-        all_jobs.extend(batch)
-        print(f"    + {len(batch)} found")
-
-    # ── Tier 3: LinkedIn ──────────────────────────────────────────────────────
-    if tier_max >= 3 and not companies_only:
-        queries = build_search_queries(search_terms)
-        li_queries = [q for q in queries if q["platform"] == "linkedin"]
-        print(f"\n  [Tier 3] Searching LinkedIn ({len(li_queries)} queries)...")
-        for q in li_queries:
-            print(f"    {q['query']} ...")
-            batch = _scrape_linkedin(page, q["url"], existing, max_per_search)
-            for j in batch:
-                j["source_tier"] = 3
-                j["source"]      = "linkedin"
-            all_jobs.extend(batch)
-            if batch:
-                print(f"      + {len(batch)} found")
-
-    # ── Tier 4: Google Jobs ───────────────────────────────────────────────────
-    if tier_max >= 4 and not companies_only:
-        if not queries:
-            queries = build_search_queries(search_terms)
-        goog_queries = [q for q in queries if q["platform"] == "google"]
-        print(f"\n  [Tier 4] Searching Google Jobs ({len(goog_queries)} queries)...")
-        for q in goog_queries:
-            print(f"    {q['query']} ...")
-            batch = _scrape_google_jobs(page, q["url"], existing, max_per_search)
-            for j in batch:
-                j["source_tier"] = 4
-                j["source"]      = "google_jobs"
-            all_jobs.extend(batch)
-            if batch:
-                print(f"      + {len(batch)} found")
 
     # ── Dedup cross-platform ──────────────────────────────────────────────────
     deduped = _deduplicate_by_title_company(all_jobs)

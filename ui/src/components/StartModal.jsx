@@ -6,7 +6,7 @@ export default function StartModal({ onClose, onStart }) {
   const [profiles, setProfiles] = useState([])
   const [cfg, setCfg] = useState({
     profile: 'muhammad', mode: 'auto', limit: 25,
-    discover: true, companies_only: false, tier_max: 4,
+    discover: true, companies_only: false, tier_max: 3,
     min_score: 0, dry_run: false, start_id: 1,
   })
 
@@ -68,9 +68,8 @@ export default function StartModal({ onClose, onStart }) {
 
           {/* Toggles */}
           {[
-            ['discover',       'Discover new jobs from resumes'],
-            ['companies_only', 'Company pages only (no job boards)'],
-            ['dry_run',        "Dry run (don't actually submit)"],
+            ['discover', 'Discover new jobs from resumes'],
+            ['dry_run',  "Dry run (don't actually submit)"],
           ].map(([k, label]) => (
             <div key={k} className="flex items-center justify-between">
               <span className="text-sm text-slate-300">{label}</span>
@@ -93,15 +92,16 @@ export default function StartModal({ onClose, onStart }) {
           {/* Tier max — only relevant when discover is on */}
           {cfg.discover && (
             <div>
-              <label className="block text-xs text-slate-400 mb-1.5">Discovery depth</label>
+              <label className="block text-xs text-slate-400 mb-1.5">Discovery sources</label>
               <div className="flex gap-2 flex-wrap">
-                {[[1,'Companies'],[2,'+Indeed'],[3,'+LinkedIn'],[4,'All sources']].map(([v, l]) => (
+                {[[1,'Indeed'],[2,'+LinkedIn'],[3,'+Google'],[4,'+ATS boards']].map(([v, l]) => (
                   <button key={v} onClick={() => set('tier_max', v)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${cfg.tier_max === v ? 'bg-primary text-white' : 'bg-[#0f1117] border border-[#2a2d3e] text-slate-400 hover:text-slate-100'}`}>
                     {l}
                   </button>
                 ))}
               </div>
+              <p className="text-xs text-slate-500 mt-1">Only open-apply platforms — no account creation needed</p>
             </div>
           )}
 
