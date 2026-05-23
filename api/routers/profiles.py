@@ -7,12 +7,31 @@ from pydantic import BaseModel
 
 BASE_DIR   = Path(__file__).parent.parent.parent
 CONFIG_DIR = BASE_DIR / "config"
+_CONFIG_RESOLVED = CONFIG_DIR.resolve()
 
 router = APIRouter()
 
 
+def _safe_profile_name(name: str) -> str:
+    """Reject traversal sequences, path separators, and suspicious characters."""
+    if not name or ".." in name or "/" in name or "\\" in name or "\x00" in name:
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    # Allow only alphanumeric, hyphen, underscore
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9_-]+$', name):
+        raise HTTPException(status_code=400, detail="Profile name may only contain letters, numbers, hyphens, and underscores")
+    return name
+
+
 def _profile_path(name: str) -> Path:
-    return CONFIG_DIR / f"{name}_profile.json"
+    _safe_profile_name(name)
+    path = CONFIG_DIR / f"{name}_profile.json"
+    # Verify resolved path stays within config dir
+    try:
+        path.resolve().relative_to(_CONFIG_RESOLVED)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid profile name")
+    return path
 
 
 def _load_profile(name: str) -> Dict:

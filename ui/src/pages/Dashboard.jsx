@@ -61,7 +61,8 @@ export default function Dashboard() {
   const logEnd  = useRef(null)
 
   const connectWS = useCallback(() => {
-    const ws = new WebSocket(`ws://${window.location.host}/ws/logs`)
+    const token = localStorage.getItem('bot_token') || ''
+    const ws = new WebSocket(`ws://${window.location.host}/ws/logs?token=${encodeURIComponent(token)}`)
     ws.onmessage = (e) => {
       try {
         const entry = JSON.parse(e.data)

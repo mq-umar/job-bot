@@ -32,6 +32,14 @@ _DEFAULTS: Dict[str, Any] = {
     "onboarding_complete": False,
 }
 
+# Keys the frontend is allowed to set via PUT /api/settings
+_ALLOWED_KEYS = {
+    "session_limit", "min_score", "auto_discover", "default_mode",
+    "cover_letter", "browser_visible", "company_cooldown_days", "theme",
+    "accent_color", "smtp_enabled", "smtp_host", "smtp_port", "smtp_user",
+    "smtp_pass", "anthropic_key", "onboarding_complete",
+}
+
 
 def _load() -> Dict:
     if SETTINGS_FILE.exists():
@@ -52,20 +60,41 @@ def _save(data: Dict) -> None:
 
 @router.get("")
 def get_settings() -> Dict:
-    return _load()
+    data = _load()
+    # Never expose encrypted key material — replace with boolean presence flags
+    data["anthropic_key_set"] = bool(data.pop("anthropic_key_enc", ""))
+    data["smtp_pass_set"]     = bool(data.pop("smtp_pass_enc", ""))
+    return data
 
 
 @router.put("")
 def update_settings(body: Dict[str, Any]) -> Dict:
+    # Strip unknown keys (no arbitrary persistence) and block direct _enc overwrite
+    unknown = set(body.keys()) - _ALLOWED_KEYS
+    for k in unknown:
+        body.pop(k)
+
     current = _load()
-    # Encrypt sensitive fields before storing
     from api.security import encrypt
-    if "anthropic_key" in body and body["anthropic_key"]:
-        body["anthropic_key_enc"] = encrypt(body.pop("anthropic_key"))
-    if "smtp_pass" in body and body["smtp_pass"]:
-        body["smtp_pass_enc"] = encrypt(body.pop("smtp_pass"))
+    if "anthropic_key" in body:
+        val = body.pop("anthropic_key")
+        if val:                                       # non-empty → encrypt and store
+            current["anthropic_key_enc"] = encrypt(val)
+        elif val == "":                               # explicit clear → wipe key
+            current["anthropic_key_enc"] = ""
+    if "smtp_pass" in body:
+        val = body.pop("smtp_pass")
+        if val:
+            current["smtp_pass_enc"] = encrypt(val)
+        elif val == "":
+            current["smtp_pass_enc"] = ""
+
     current.update(body)
     _save(current)
+
+    # Return safe view (no _enc fields)
+    current["anthropic_key_set"] = bool(current.pop("anthropic_key_enc", ""))
+    current["smtp_pass_set"]     = bool(current.pop("smtp_pass_enc", ""))
     return current
 
 

@@ -1,15 +1,21 @@
 """WebSocket endpoint — streams LOG_QUEUE events to connected clients."""
 import asyncio
 import json
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from api.bot_runner import LOG_QUEUE
+from api.security import verify_token
 
 router = APIRouter()
 _clients: list = []
 
 
 @router.websocket("/ws/logs")
-async def ws_logs(websocket: WebSocket):
+async def ws_logs(websocket: WebSocket, token: str = Query(default="")):
+    # Require a valid session token before accepting the connection
+    if not verify_token(token):
+        await websocket.close(code=1008)  # 1008 = Policy Violation
+        return
+
     await websocket.accept()
     _clients.append(websocket)
     try:
@@ -25,9 +31,8 @@ async def ws_logs(websocket: WebSocket):
                     break
             if not drained:
                 await asyncio.sleep(0.2)
-            # Keep connection alive
+            # Keep connection alive / detect disconnect
             try:
-                # Non-blocking receive — just to detect disconnect
                 await asyncio.wait_for(websocket.receive_text(), timeout=0.01)
             except asyncio.TimeoutError:
                 pass

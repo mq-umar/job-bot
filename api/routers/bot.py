@@ -1,16 +1,10 @@
 """Bot control endpoints: start, stop, pause, status, captcha solved, review answer."""
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from api.bot_runner import BOT_STATE, start_session
-from api.security import verify_token
 
 router = APIRouter()
-
-
-def _auth(x_bot_token: Optional[str] = None):
-    # Token is optional in dev — only enforced if provided
-    pass
 
 
 class StartConfig(BaseModel):

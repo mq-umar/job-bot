@@ -5,13 +5,28 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from fastapi.responses import FileResponse
 
-BASE_DIR = Path(__file__).parent.parent.parent
+BASE_DIR     = Path(__file__).parent.parent.parent
+_RESUMES_ROOT = (BASE_DIR / "resumes").resolve()
 
 router = APIRouter()
 
 
+def _safe_name(value: str, field: str = "name") -> str:
+    """Reject path separators, traversal sequences, and null bytes."""
+    if not value or ".." in value or "/" in value or "\\" in value or "\x00" in value:
+        raise HTTPException(status_code=400, detail=f"Invalid {field}")
+    return value
+
+
 def _resume_dir(profile: str) -> Path:
-    return BASE_DIR / "resumes" / profile
+    _safe_name(profile, "profile")
+    path = BASE_DIR / "resumes" / profile
+    # Double-check resolved path stays within resumes root
+    try:
+        path.resolve().relative_to(_RESUMES_ROOT)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid profile")
+    return path
 
 
 def _resume_stats(profile: str) -> dict:
@@ -77,6 +92,7 @@ async def upload_resume(profile: str, file: UploadFile = File(...)):
 
 @router.delete("/{profile}/{filename}")
 def delete_resume(profile: str, filename: str):
+    _safe_name(filename, "filename")
     path = _resume_dir(profile) / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="Resume not found")
@@ -86,6 +102,7 @@ def delete_resume(profile: str, filename: str):
 
 @router.get("/{profile}/{filename}/score")
 def score_resume(profile: str, filename: str, jd: str = Query(...)):
+    _safe_name(filename, "filename")
     path = _resume_dir(profile) / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="Resume not found")
@@ -109,6 +126,7 @@ def score_resume(profile: str, filename: str, jd: str = Query(...)):
 
 @router.get("/{profile}/{filename}/download")
 def download_resume(profile: str, filename: str):
+    _safe_name(filename, "filename")
     path = _resume_dir(profile) / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="Resume not found")

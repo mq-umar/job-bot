@@ -112,7 +112,7 @@ export default function Settings() {
               {showKey ? 'Hide' : 'Show'}
             </button>
           </div>
-          {s.anthropic_key_enc && <p className="text-xs text-success mt-1 flex items-center gap-1"><CheckCircle size={12} /> Key stored (encrypted)</p>}
+          {s.anthropic_key_set && <p className="text-xs text-success mt-1 flex items-center gap-1"><CheckCircle size={12} /> Key stored (encrypted)</p>}
         </div>
       </Section>
 
