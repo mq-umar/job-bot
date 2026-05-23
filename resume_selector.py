@@ -49,7 +49,7 @@ def _resume_folder(profile: str) -> Path:
     return primary  # return even if empty — caller handles missing PDFs
 
 
-def verify_resumes(profile: str = "muhammad") -> tuple[int, int, list[str]]:
+def verify_resumes(profile: str = "") -> tuple[int, int, list[str]]:
     """Return (found, total, []) scanning the actual folder — no hardcoded list."""
     folder = _resume_folder(profile)
     found  = list(folder.glob("*.pdf")) if folder.exists() else []
@@ -85,7 +85,7 @@ def _clean(text: str) -> str:
 
 # ── TF-IDF scoring ────────────────────────────────────────────────────────────
 
-def score_resumes(jd_text: str, profile: str = "muhammad") -> list[tuple[str, float]]:
+def score_resumes(jd_text: str, profile: str = "") -> list[tuple[str, float]]:
     """
     Score every resume in the folder against jd_text using TF-IDF cosine similarity.
     Returns [(filename, score), ...] sorted best to worst.
@@ -158,21 +158,21 @@ _FALLBACK_ORDER = [
     "C5_Cybersecurity_Security_Analyst.pdf",
 ]
 
-_RAZIA_KEYWORD_MAP = [
-    (["vulnerability"],              "RC1_Vulnerability_Management.pdf"),
-    (["endpoint", "intune"],         "RC2_Endpoint_Security_Intune.pdf"),
+_KEYWORD_FALLBACK_MAP = [
+    (["vulnerability", "vuln"],      "RC1_Vulnerability_Management.pdf"),
+    (["endpoint", "intune", "mdm"],  "RC2_Endpoint_Security_Intune.pdf"),
     (["macos", "apple"],             "RC3_macOS_Apple_MDM.pdf"),
-    (["patch"],                      "RC4_Patch_Management_Compliance.pdf"),
+    (["patch", "compliance"],        "RC4_Patch_Management_Compliance.pdf"),
     (["soc", "analyst"],             "RC5_SOC_Security_Analyst.pdf"),
-    (["it security"],                "RC6_IT_Security_Engineer.pdf"),
+    (["it security", "security eng"],"RC6_IT_Security_Engineer.pdf"),
     (["cloud", "azure"],             "RC7_Cloud_Azure_Security.pdf"),
-    (["government", "dod"],          "RC8_Government_Defense.pdf"),
+    (["government", "dod", "fed"],   "RC8_Government_Defense.pdf"),
 ]
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def pick_resume(title: str, notes: str = "", profile: str = "muhammad",
+def pick_resume(title: str, notes: str = "", profile: str = "",
                 company: str = "", jd_text: str = "",
                 exclude=None) -> str:
     """
@@ -180,9 +180,7 @@ def pick_resume(title: str, notes: str = "", profile: str = "muhammad",
     exclude: filenames to skip (for retry-on-missing-file logic).
     """
     exclude = exclude or set()
-    if profile == "razia":
-        return _pick_razia(title, notes, jd_text)
-    return _pick_muhammad(title, notes, company, jd_text, exclude)
+    return _pick_generic(title, notes, company, jd_text, profile, exclude)
 
 
 # Keep old call signature for any code still using positional args
@@ -211,7 +209,7 @@ def get_matched_keywords(jd_text: str, resume_path: str, n: int = 6) -> list[str
         return []
 
 
-def pick_resume_with_details(title: str, notes: str = "", profile: str = "muhammad",
+def pick_resume_with_details(title: str, notes: str = "", profile: str = "",
                               company: str = "", jd_text: str = "",
                               exclude=None) -> tuple:
     """
@@ -263,50 +261,30 @@ def _find(folder: Path, filename: str, exclude: set):
     return str(path) if path.exists() else None
 
 
-def _pick_razia(title: str, notes: str, jd_text: str = "") -> str:
-    folder   = _resume_folder("razia")
-
-    # If we have a real JD, use TF-IDF (same as Muhammad's path)
-    if jd_text and _TFIDF_OK:
-        full_text = f"{title} {notes} {jd_text}"
-        ranked = score_resumes(full_text, "razia")
-        if ranked:
-            top3 = ranked[:3]
-            print(f"  [Razia] Top matches: " + ", ".join(f"{n}({s:.3f})" for n, s in top3))
-            for filename, score in ranked:
-                if score > 0.0:
-                    path = folder / filename
-                    if path.exists():
-                        return str(path)
-
-    # Keyword fallback (title/notes only — no JD available)
-    haystack = (title + " " + notes).lower()
-    for keywords, filename in _RAZIA_KEYWORD_MAP:
-        if any(kw in haystack for kw in keywords):
-            path = folder / filename
-            if path.exists():
-                return str(path)
-
-    default = folder / "RC6_IT_Security_Engineer.pdf"
-    return str(default) if default.exists() else str(next(folder.glob("*.pdf")))
-
-
-def _pick_muhammad(title: str, notes: str, company: str,
-                   jd_text: str, exclude: set) -> str:
-    folder    = _resume_folder("muhammad")
+def _pick_generic(title: str, notes: str, company: str,
+                  jd_text: str, profile: str, exclude: set) -> str:
+    """
+    Universal resume picker that works for any profile:
+      1. Company/title keyword overrides (fast — no PDF read)
+      2. TF-IDF cosine similarity on full JD text
+      3. Keyword fallback on title+notes alone
+      4. Ranked fallback defaults
+      5. Any PDF in folder
+    """
+    folder    = _resume_folder(profile)
     title_l   = title.lower()
     company_l = company.lower()
     full_jd   = f"{title} {company} {notes} {jd_text}"
 
-    # 1. Company override
+    # 1. Company override (fast path)
     for keyword, filename in _COMPANY_OVERRIDES.items():
         if keyword in company_l or keyword in title_l:
             result = _find(folder, filename, exclude)
             if result:
                 return result
-            break  # missing — fall through
+            break
 
-    # 2. IBM sub-routing
+    # 2. Special sub-routing (e.g. IBM role variants)
     if "ibm" in company_l or "ibm" in title_l:
         for keywords, filename in _IBM_PICK:
             if any(kw in title_l for kw in keywords):
@@ -314,8 +292,8 @@ def _pick_muhammad(title: str, notes: str, company: str,
                 if result:
                     return result
 
-    # 3. TF-IDF cosine similarity across all resumes
-    ranked = score_resumes(full_jd, "muhammad")
+    # 3. TF-IDF cosine similarity across all resumes in folder
+    ranked = score_resumes(full_jd, profile)
     if ranked:
         top3 = ranked[:3]
         print(f"  Top matches: " + ", ".join(f"{n}({s:.3f})" for n, s in top3))
@@ -325,13 +303,21 @@ def _pick_muhammad(title: str, notes: str, company: str,
                 if result:
                     return result
 
-    # 4. Ranked fallback defaults
+    # 4. Ranked cluster fallback (works even if exact filenames not present)
+    haystack = (title + " " + notes).lower()
+    for keywords, filename in _KEYWORD_FALLBACK_MAP:
+        if any(kw in haystack for kw in keywords):
+            result = _find(folder, filename, exclude)
+            if result:
+                return result
+
+    # 5. Static fallback defaults
     for filename in _FALLBACK_ORDER:
         result = _find(folder, filename, exclude)
         if result:
             return result
 
-    # 5. Last resort — any PDF in folder
+    # 6. Last resort — any PDF in folder
     for pdf in sorted(folder.glob("*.pdf")):
         if pdf.name not in exclude:
             return str(pdf)

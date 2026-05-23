@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Automated safety and logic audit for job-bot.
+Automated safety, logic, and security audit for job-bot.
 Run with: python tests/test_bot.py
 
 All tests must pass before running the bot in production.
 Tests cover: safety classification, scam detection, deduplication,
-salary guards, URL normalization, and review-queue integrity.
+salary guards, URL normalization, review-queue integrity,
+path traversal guards, settings security, and hardcoded-PII checks.
 """
 import sys
 import json
@@ -234,19 +235,19 @@ with tempfile.TemporaryDirectory() as tmpdir:
         "platform": "greenhouse", "selected_resume": "resume.pdf",
         "resume_score": "0.65", "fit_label": "Good Fit",
     }
-    save_needs_review("muhammad", entry, ["SSN / Tax ID"])
-    save_needs_review("muhammad", entry, ["SSN / Tax ID"])  # duplicate
+    save_needs_review("alice", entry, ["SSN / Tax ID"])
+    save_needs_review("alice", entry, ["SSN / Tax ID"])  # duplicate
 
-    records = load_needs_review("muhammad")
+    records = load_needs_review("alice")
     check("Duplicate URL → stored only once", len(records) == 1, f"{len(records)} records")
 
     entry2 = {**entry, "job_url": "https://boards.greenhouse.io/testco/jobs/456"}
-    save_needs_review("muhammad", entry2, ["Date of Birth"])
-    records = load_needs_review("muhammad")
+    save_needs_review("alice", entry2, ["Date of Birth"])
+    records = load_needs_review("alice")
     check("Different URL → stored separately", len(records) == 2, f"{len(records)} records")
 
-    records_razia = load_needs_review("razia")
-    check("Profile filter works (razia sees nothing)", len(records_razia) == 0)
+    records_bob = load_needs_review("bob")
+    check("Profile filter works (bob sees nothing)", len(records_bob) == 0)
 
     _safety_mod.BASE_DIR = orig
 
@@ -307,6 +308,136 @@ for fpath in SOURCE_FILES:
                     break
         else:
             check(f"No {label} in {fpath.name}", True)
+
+# ─── 13. Hardcoded personal names must not appear in public source files ───────
+print("\n=== Hardcoded personal name audit ===")
+PERSONAL_NAMES = ["muhammad", "razia"]
+NAME_AUDIT_FILES = [
+    Path(__file__).parent.parent / "main.py",
+    Path(__file__).parent.parent / "job_finder.py",
+    Path(__file__).parent.parent / "form_filler.py",
+    Path(__file__).parent.parent / "resume_selector.py",
+    Path(__file__).parent.parent / "api" / "routers" / "bot.py",
+    Path(__file__).parent.parent / "api" / "bot_runner.py",
+]
+for fpath in NAME_AUDIT_FILES:
+    if not fpath.exists():
+        continue
+    content = fpath.read_text().lower()
+    for name in PERSONAL_NAMES:
+        found = name in content
+        check(f"No '{name}' in {fpath.name}", not found,
+              f"hardcoded personal name found in {fpath.name}")
+
+# ─── 14. Security: path traversal guards in routers ─────────────────────────
+print("\n=== Security: path traversal guard validation ===")
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent.parent))
+
+try:
+    from fastapi import HTTPException as _HTTPException
+    from api.routers.resumes import _safe_name as _rsafe
+    from api.routers.profiles import _safe_profile_name as _psafe
+
+    # _safe_name must reject traversal sequences
+    for bad in ["..", "../etc", "../../.bot_key", "foo/bar", "foo\\bar", "\x00"]:
+        try:
+            _rsafe(bad, "test")
+            check(f"resumes._safe_name rejects {repr(bad)}", False, "should have raised HTTPException")
+        except _HTTPException:
+            check(f"resumes._safe_name rejects {repr(bad)}", True)
+
+    # _safe_name must accept legitimate filenames
+    for good in ["resume.pdf", "C1_Systems_Admin.pdf", "my-resume", "Resume_v2"]:
+        try:
+            result = _rsafe(good, "test")
+            check(f"resumes._safe_name accepts {repr(good)}", result == good)
+        except _HTTPException:
+            check(f"resumes._safe_name accepts {repr(good)}", False, "should have been accepted")
+
+    # _safe_profile_name must reject traversal sequences
+    for bad in ["..", "../../etc", "admin/evil", "test\\path", "name with space"]:
+        try:
+            _psafe(bad)
+            check(f"profiles._safe_profile_name rejects {repr(bad)}", False, "should have raised HTTPException")
+        except _HTTPException:
+            check(f"profiles._safe_profile_name rejects {repr(bad)}", True)
+
+    # _safe_profile_name must accept valid profile names
+    for good in ["alice", "bob-smith", "user_1", "JohnDoe"]:
+        try:
+            result = _psafe(good)
+            check(f"profiles._safe_profile_name accepts {repr(good)}", result == good)
+        except _HTTPException:
+            check(f"profiles._safe_profile_name accepts {repr(good)}", False, "should have been accepted")
+
+except ImportError as e:
+    check("Security router imports (fastapi required)", False, str(e))
+
+# ─── 15. Security: settings GET must not expose encrypted keys ───────────────
+print("\n=== Security: settings endpoint key masking ===")
+import json as _json, tempfile as _tempfile
+
+_settings_src = Path(__file__).parent.parent / "api" / "routers" / "settings.py"
+check("settings.py exists", _settings_src.exists())
+if _settings_src.exists():
+    _text = _settings_src.read_text()
+    check("GET settings pops anthropic_key_enc", "pop(\"anthropic_key_enc\"" in _text or "pop('anthropic_key_enc'" in _text)
+    check("GET settings pops smtp_pass_enc",     "pop(\"smtp_pass_enc\"" in _text or "pop('smtp_pass_enc'" in _text)
+    check("GET settings returns anthropic_key_set", "anthropic_key_set" in _text)
+    check("PUT settings has allowlist", "_ALLOWED_KEYS" in _text)
+
+# ─── 16. Security: WebSocket requires token ──────────────────────────────────
+print("\n=== Security: WebSocket authentication ===")
+_ws_src = Path(__file__).parent.parent / "api" / "websocket.py"
+check("websocket.py exists", _ws_src.exists())
+if _ws_src.exists():
+    _text = _ws_src.read_text()
+    check("WebSocket checks token", "verify_token" in _text)
+    check("WebSocket closes on bad token", "close" in _text and "1008" in _text)
+
+# ─── 17. Simulation: form_filler cover letter (AI fallback path) ─────────────
+print("\n=== Simulation: cover letter generation (no API key) ===")
+from form_filler import get_cover_letter, _FILL_CONTEXT
+
+# Without AI key → must still return a non-empty string
+_cl = get_cover_letter("Software Engineer", "Acme Corp", "resume.pdf", "testuser",
+                       matched_keywords=["Python", "AWS", "FastAPI"],
+                       profile={"first_name": "Test", "last_name": "User"},
+                       jd_text="We need a Python developer with AWS experience.")
+check("Cover letter (no API key) returns string", isinstance(_cl, str))
+check("Cover letter (no API key) non-empty",      len(_cl) > 20)
+check("Cover letter mentions role or company",     "Software Engineer" in _cl or "Acme" in _cl or "Python" in _cl)
+check("Cover letter has no <None>",                "<None>" not in _cl and "None" not in _cl)
+
+# ─── 18. Simulation: job_finder profile-aware salary lookup ──────────────────
+print("\n=== Simulation: job_finder salary lookup (profile-driven) ===")
+from job_finder import _salary_ok, _salary_min, _priority_companies
+
+# With no profile file → returns 0 (no filter = all jobs OK)
+check("_salary_min missing profile → 0",  _salary_min("__nonexistent_profile__") == 0)
+check("_salary_ok no filter → True",      _salary_ok("$40K/year", "__nonexistent_profile__"))
+check("_priority_companies missing → []", _priority_companies("__nonexistent_profile__") == [])
+
+# ─── 19. Simulation: form_filler _FILL_CONTEXT thread safety ─────────────────
+print("\n=== Simulation: fill_form context isolation ===")
+from form_filler import _FILL_CONTEXT as _fc_before
+
+# Verify _FILL_CONTEXT structure
+check("_FILL_CONTEXT has jd_text key",  "jd_text" in _fc_before)
+check("_FILL_CONTEXT has profile key",  "profile" in _fc_before)
+check("_FILL_CONTEXT jd_text is str",   isinstance(_fc_before.get("jd_text", ""), str))
+
+# ─── 20. Simulation: ai_writer graceful failure (no key) ─────────────────────
+print("\n=== Simulation: ai_writer graceful fallback (no API key) ===")
+from api.ai_writer import generate_cover_letter as _ai_cl, suggest_ats_keywords as _ai_kw
+
+# With no settings file → should return None (not raise)
+_result = _ai_cl("Engineer", "Corp", "resume.pdf", {"first_name": "X", "last_name": "Y"}, "jd text")
+check("ai_writer returns None when no key (no exception)", _result is None)
+
+_kw_result = _ai_kw("Python developer role with AWS and Kubernetes experience")
+check("suggest_ats_keywords returns None when no key (no exception)", _kw_result is None)
 
 # ─── Summary ──────────────────────────────────────────────────────────────────
 print(f"\n{'='*60}")

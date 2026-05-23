@@ -26,16 +26,40 @@ except ImportError:
 
 BASE_DIR = Path(__file__).parent
 
-RESUME_FOLDER = {
-    "muhammad": str(BASE_DIR / "resumes" / "muhammad"),
-    "razia":    str(BASE_DIR / "resumes" / "razia"),
-}
 
-# Salary minimums per profile (0 = no filter)
-SALARY_MIN = {
-    "muhammad": 60_000,
-    "razia":    110_000,
-}
+def _resume_folder(profile: str) -> str:
+    """Return the resumes directory for a profile (created lazily)."""
+    return str(BASE_DIR / "resumes" / profile)
+
+
+def _salary_min(profile: str) -> int:
+    """Read salary_minimum from the profile's config JSON, default 0 (no filter)."""
+    try:
+        import json
+        path = BASE_DIR / "config" / f"{profile}_profile.json"
+        if path.exists():
+            with open(path) as f:
+                return int(json.load(f).get("salary_minimum", 0))
+    except Exception:
+        pass
+    return 0
+
+
+def _priority_companies(profile: str) -> list:
+    """
+    Load per-profile company ATS boards from config/{profile}_companies.json.
+    Returns [] if the file doesn't exist — add your own targets there.
+    See config/companies.example.json for the format.
+    """
+    try:
+        import json
+        path = BASE_DIR / "config" / f"{profile}_companies.json"
+        if path.exists():
+            with open(path) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
 
 # Open-apply ATS platforms — no company-specific account required to submit an application.
 # Discovery only queues jobs whose apply URL is hosted on one of these domains.
@@ -70,38 +94,6 @@ def _is_open_ats_url(url: str) -> bool:
         return False
 
 
-# Tier 1 — direct Greenhouse / Lever / Workday job board URLs for target companies.
-# These are open-apply platforms: no company-specific account required.
-PRIORITY_COMPANIES = {
-    "muhammad": [
-        {"name": "Spotify",    "url": "https://boards.greenhouse.io/spotify"},
-        {"name": "Cloudflare", "url": "https://boards.greenhouse.io/cloudflare"},
-        {"name": "Datadog",    "url": "https://boards.greenhouse.io/datadog"},
-        {"name": "MongoDB",    "url": "https://boards.greenhouse.io/mongodb"},
-        {"name": "Twilio",     "url": "https://boards.greenhouse.io/twilio"},
-        {"name": "Squarespace","url": "https://boards.greenhouse.io/squarespace"},
-        {"name": "Etsy",       "url": "https://boards.greenhouse.io/etsy"},
-        {"name": "Stripe",     "url": "https://jobs.lever.co/stripe"},
-        {"name": "Figma",      "url": "https://boards.greenhouse.io/figma"},
-        {"name": "Two Sigma",  "url": "https://boards.greenhouse.io/twosigma"},
-        {"name": "Palantir",   "url": "https://jobs.lever.co/palantir"},
-        {"name": "Okta",       "url": "https://boards.greenhouse.io/okta"},
-    ],
-    "razia": [
-        {"name": "Snyk",            "url": "https://boards.greenhouse.io/snyk"},
-        {"name": "Wiz",             "url": "https://boards.greenhouse.io/wizsecurity"},
-        {"name": "Recorded Future", "url": "https://boards.greenhouse.io/recordedfuture"},
-        {"name": "Arctic Wolf",     "url": "https://boards.greenhouse.io/arcticwolf"},
-        {"name": "Abnormal",        "url": "https://boards.greenhouse.io/abnormalsecurity"},
-        {"name": "Huntress",        "url": "https://boards.greenhouse.io/huntresslabs"},
-        {"name": "Tenable",         "url": "https://boards.greenhouse.io/tenable"},
-        {"name": "CrowdStrike",     "url": "https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers"},
-        {"name": "Palo Alto",       "url": "https://paloaltonetworks.wd3.myworkdayjobs.com/en-US/External"},
-        {"name": "Rapid7",          "url": "https://boards.greenhouse.io/rapid7"},
-        {"name": "Lacework",        "url": "https://boards.greenhouse.io/lacework"},
-        {"name": "Cybereason",      "url": "https://boards.greenhouse.io/cybereason"},
-    ],
-}
 
 # Fallback LinkedIn searches if reverse-extraction produces nothing
 _FALLBACK_SEARCHES = [
@@ -152,7 +144,7 @@ def _pdf_text(path: str) -> str:
 
 
 def _all_resume_text(profile: str) -> str:
-    folder = Path(RESUME_FOLDER.get(profile, ""))
+    folder = Path(_resume_folder(profile))
     if not folder.exists():
         return ""
     chunks = []
@@ -519,7 +511,7 @@ def _parse_max_salary(text: str):
 
 def _salary_ok(notes: str, profile: str) -> bool:
     """Return True if job salary is above the profile minimum (or if salary unlisted)."""
-    minimum = SALARY_MIN.get(profile, 0)
+    minimum = _salary_min(profile)
     if not minimum:
         return True
     max_sal = _parse_max_salary(notes or "")
@@ -616,7 +608,7 @@ def discover_jobs(page, context, profile_name: str, applied_urls: set,
 
     # ── Tier 4: Direct ATS company boards (Greenhouse / Lever / Workday) ──────
     if tier_max >= 4 or companies_only:
-        companies = PRIORITY_COMPANIES.get(profile_name, [])
+        companies = _priority_companies(profile_name)
         print(f"\n  [Tier 4] Searching {len(companies)} ATS company boards...")
         for company in companies:
             print(f"    {company['name']} ...")

@@ -5,7 +5,7 @@ import { api } from '../api'
 export default function StartModal({ onClose, onStart }) {
   const [profiles, setProfiles] = useState([])
   const [cfg, setCfg] = useState({
-    profile: 'muhammad', mode: 'auto', limit: 25,
+    profile: '', mode: 'auto', limit: 25,
     discover: true, companies_only: false, tier_max: 3,
     min_score: 0, dry_run: false, start_id: 1,
   })
@@ -35,7 +35,7 @@ export default function StartModal({ onClose, onStart }) {
           <div>
             <label className="block text-xs text-slate-400 mb-1.5">Profile</label>
             <div className="flex gap-2 flex-wrap">
-              {(profiles.length ? profiles.map(p => p.name || p.first_name?.toLowerCase()) : ['muhammad', 'razia']).map(p => (
+              {profiles.map(p => p.name || p.first_name?.toLowerCase()).filter(Boolean).map(p => (
                 <button key={p} onClick={() => set('profile', p)}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors ${cfg.profile === p ? 'bg-primary text-white' : 'bg-[#0f1117] border border-[#2a2d3e] text-slate-400 hover:text-slate-100'}`}>
                   {p}

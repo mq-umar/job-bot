@@ -60,7 +60,7 @@ SKILLS_BY_RESUME = {
     "Resume_BackEnd_Developer.pdf":                     "Java/Spring Boot backend development, AWS Lambda, and REST API design",
     "Resume_Data_Analyst.pdf":                          "Power BI reporting, SQL analytics, and healthcare KPI dashboards",
     "Resume_Process_Automation_Engineer_FINAL.pdf":     "process automation, Power BI, and continuous improvement engineering",
-    # Razia resumes
+    # Security-focused resumes
     "RC1_Vulnerability_Management.pdf":     "vulnerability assessment, patch lifecycle management, and compliance reporting",
     "RC2_Endpoint_Security_Intune.pdf":     "Intune MDM, endpoint security policy enforcement, and compliance management",
     "RC3_macOS_Apple_MDM.pdf":              "macOS fleet management, Apple MDM, and endpoint security configuration",

@@ -175,7 +175,7 @@ def run_session(config: Dict) -> None:
     BOT_STATE.status = "running"
     BOT_STATE.session_config = config
 
-    profile_name = config.get("profile", "muhammad")
+    profile_name = config.get("profile") or ""
     dry_run      = config.get("dry_run", False)
     review       = config.get("mode", "auto") == "review"
     limit        = config.get("limit", 50)

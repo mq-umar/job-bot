@@ -8,7 +8,7 @@ router = APIRouter()
 
 
 class StartConfig(BaseModel):
-    profile: str = "muhammad"
+    profile: str = ""
     mode: str = "auto"          # auto | review
     limit: int = 25
     discover: bool = True

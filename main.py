@@ -3,16 +3,14 @@
 main.py — Job Application Bot
 
 Usage:
-  python main.py --profile muhammad
-  python main.py --profile muhammad --discover
-  python main.py --profile muhammad --discover --review
-  python main.py --profile muhammad --discover --limit 25
-  python main.py --profile muhammad --discover --dry-run
-  python main.py --profile razia --discover
-  python main.py --profile razia --discover --review
+  python main.py --profile yourname
+  python main.py --profile yourname --discover
+  python main.py --profile yourname --discover --review
+  python main.py --profile yourname --discover --limit 25
+  python main.py --profile yourname --discover --dry-run
 
 Flags:
-  --profile    : muhammad or razia
+  --profile    : name matching config/{name}_profile.json
   --discover   : auto-find new jobs from resume text before applying
   --review     : show each job, ask y/n/q before submitting
   --limit N    : max jobs per session (default: 50)
@@ -216,8 +214,8 @@ def print_status(tag: str, detail: str = ""):
 
 # ── Salary parsing (logging only) ─────────────────────────────────────────────
 
-# Fallback targets used only when profile doesn't define salary_minimum.
-_SALARY_TARGET_FALLBACK = {"muhammad": 75_000, "razia": 110_000}
+# Fallback target used only when profile doesn't define salary_minimum.
+_SALARY_TARGET_FALLBACK = 75_000
 
 def parse_salary_label(text: str, profile_name: str,
                        profile_data: dict = None) -> tuple[str, str]:
@@ -241,7 +239,7 @@ def parse_salary_label(text: str, profile_name: str,
     target = (
         (profile_data.get("salary_minimum") or profile_data.get("salary_number"))
         if profile_data else None
-    ) or _SALARY_TARGET_FALLBACK.get(profile_name, 75_000)
+    ) or _SALARY_TARGET_FALLBACK
 
     label  = ("above_target" if annual > target * 1.05
               else "at_target" if annual >= target * 0.95
@@ -1090,8 +1088,8 @@ def _finish_job(active_page, row: dict, profile: dict, profile_name: str,
 
 def main():
     parser = argparse.ArgumentParser(description="Job Application Bot")
-    parser.add_argument("--profile",   default="muhammad",
-                        help="Profile to use: muhammad or razia")
+    parser.add_argument("--profile",   default=None,
+                        help="Profile name matching config/{name}_profile.json")
     parser.add_argument("--start-id",  type=int, default=1)
     parser.add_argument("--job-id",    type=int, default=None)
     parser.add_argument("--discover",  action="store_true",
@@ -1109,6 +1107,16 @@ def main():
     parser.add_argument("--tier-max",       type=int, default=3,
                         help="Search up to this tier: 1=Indeed, 2=+LinkedIn, 3=+Google Jobs, 4=+ATS company boards")
     args = parser.parse_args()
+
+    if not args.profile:
+        # Auto-select the first available profile if not specified
+        from pathlib import Path as _P
+        _profiles = sorted((_P(__file__).parent / "config").glob("*_profile.json"))
+        if not _profiles:
+            print("No profiles found. Copy config/profile.example.json to config/yourname_profile.json")
+            return
+        args.profile = _profiles[0].stem.replace("_profile", "")
+        print(f"No --profile specified, using: {args.profile}")
 
     profile_name = args.profile.lower()
     profile      = load_profile(profile_name)

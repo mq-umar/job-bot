@@ -29,7 +29,7 @@ export default function Onboarding({ onComplete }) {
   const uploadAll = async () => {
     setUploading(true)
     for (const f of files) {
-      try { await api.uploadResume(form.first_name.toLowerCase() || 'muhammad', f) } catch {}
+      try { await api.uploadResume(form.first_name.toLowerCase() || 'default', f) } catch {}
     }
     setUploading(false)
     next()

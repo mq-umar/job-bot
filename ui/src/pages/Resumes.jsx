@@ -68,7 +68,7 @@ function ResumeCard({ resume, profile, onDelete }) {
 
 export default function Resumes() {
   const [profiles, setProfiles] = useState([])
-  const [active,   setActive]   = useState('muhammad')
+  const [active,   setActive]   = useState('')
   const [resumes,  setResumes]  = useState([])
   const [loading,  setLoading]  = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -83,13 +83,11 @@ export default function Resumes() {
     api.listProfiles().then(ps => {
       setProfiles(ps)
       if (ps.length) {
-        const name = ps[0].name || ps[0].first_name?.toLowerCase() || 'muhammad'
+        const name = ps[0].name || ps[0].first_name?.toLowerCase() || ''
         setActive(name)
-        load(name)
-      } else {
-        load('muhammad')
+        if (name) load(name)
       }
-    }).catch(() => load('muhammad'))
+    }).catch(() => {})
   }, [])
 
   const switchProfile = (p) => { setActive(p); load(p) }
@@ -125,7 +123,7 @@ export default function Resumes() {
 
       {/* Profile tabs */}
       <div className="flex gap-2">
-        {(profiles.length ? profiles.map(p => p.name || p.first_name?.toLowerCase()) : ['muhammad', 'razia']).map(p => (
+        {profiles.map(p => p.name || p.first_name?.toLowerCase()).filter(Boolean).map(p => (
           <button key={p} onClick={() => switchProfile(p)}
             className={`px-4 py-2 rounded-lg text-sm font-medium capitalize transition-colors ${active === p ? 'bg-primary text-white' : 'bg-[#1a1d27] border border-[#2a2d3e] text-slate-400 hover:text-slate-100'}`}>
             {p}

@@ -6,9 +6,8 @@ results_*.csv
 needs_review.jsonl
 
 # ── Profile data (personal — copy config/profile.example.json and fill in) ───
-config/muhammad_profile.json
-config/razia_profile.json
 config/*_profile.json
+config/*_companies.json
 muhammad/
 razia/
 
