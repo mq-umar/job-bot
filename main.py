@@ -277,7 +277,18 @@ def load_profile(name: str) -> dict:
 _DONE_STATUSES = frozenset({
     "submitted", "submitted_manually", "already_applied", "closed", "dry_run",
     "skipped_no_button", "button_not_found", "skipped_manual",
+    "auth_wall",        # requires account creation — bot can never apply here
+    "skipped_scam",     # confirmed scam — never retry
 })
+
+_AUTH_WALL_PATTERNS = [
+    "sign in to apply", "log in to apply", "create account to apply",
+    "please sign in or register", "you must create an account",
+    "login or register to apply", "create a profile to apply",
+    "create an account to continue", "sign up to apply",
+    "you need to log in to apply", "register to apply",
+    "must be logged in to apply", "please log in to continue",
+]
 
 
 def load_blacklist() -> set:
@@ -547,6 +558,19 @@ def process_job(page, context, row: dict, row_num: int,
     platform = detect_platform(page.url)
     row["platform"] = platform
     console.print(f"  Platform: [cyan]{platform}[/cyan]")
+
+    # ── 2b. Auth wall check ──────────────────────────────────────────────────
+    try:
+        _body_low = page.inner_text("body").lower()[:3000]
+        if any(p in _body_low for p in _AUTH_WALL_PATTERNS):
+            print_status("SKIPPED", "auth wall — requires account/login to apply")
+            log_result(profile_name, _make_entry(
+                profile_name, row, "auth_wall", "", 0.0, "Low Fit", [],
+                notes="requires account creation or login to apply"))
+            applied_urls.add(norm_url)
+            return "continue"
+    except Exception:
+        pass
 
     # ── 3. Extract JD ────────────────────────────────────────────────────────
     # Check if page is 404 or closed — only hard skip

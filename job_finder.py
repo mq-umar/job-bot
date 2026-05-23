@@ -38,37 +38,33 @@ SALARY_MIN = {
 }
 
 # Tier 1 — direct company career page search URLs ({query} replaced with URL-encoded terms)
+# URLs verified to return job listings without requiring login.
 PRIORITY_COMPANIES = {
     "muhammad": [
         {"name": "Microsoft",      "url": "https://careers.microsoft.com/global/en/search-results?q={query}&l=United+States"},
         {"name": "Google",         "url": "https://careers.google.com/jobs/results/?q={query}&location=New+York"},
-        {"name": "Apple",          "url": "https://jobs.apple.com/en-us/search?search={query}&location=new-york-NYC"},
         {"name": "Amazon",         "url": "https://amazon.jobs/en/search?query={query}"},
         {"name": "IBM",            "url": "https://careers.ibm.com/job/search?q={query}&country=US"},
-        {"name": "Home Depot",     "url": "https://careers.homedepot.com/content/US-Jobs/?search={query}"},
         {"name": "Verizon",        "url": "https://mycareer.verizon.com/jobs/search/?keyword={query}&location=New+York"},
-        {"name": "Broadridge",     "url": "https://jobs.broadridge.com/search/?q={query}"},
-        {"name": "Northwell",      "url": "https://jobs.northwell.edu/search/?q={query}"},
         {"name": "JPMorgan Chase", "url": "https://careers.jpmorgan.com/us/en/jobs?search={query}"},
-        {"name": "Citi",           "url": "https://jobs.citi.com/search-jobs/{query}/287/1"},
-        {"name": "Morgan Stanley", "url": "https://jobs.morganstanley.com/job-search-results/?q={query}&location=New+York"},
         {"name": "Bloomberg",      "url": "https://careers.bloomberg.com/job/search?q={query}"},
-        {"name": "Spotify",        "url": "https://boards.greenhouse.io/spotify/jobs"},
+        {"name": "Broadridge",     "url": "https://jobs.broadridge.com/search/?q={query}"},
+        {"name": "Northwell",      "url": "https://jobs.northwell.edu/search-jobs/{query}/287/1"},
         {"name": "NBC Universal",  "url": "https://jobs.nbcuniversal.com/search/?q={query}"},
+        {"name": "Morgan Stanley", "url": "https://morganstanleycareers.com/search/?q={query}"},
+        {"name": "Spotify",        "url": "https://boards.greenhouse.io/spotify/jobs"},
     ],
     "razia": [
         {"name": "CrowdStrike",        "url": "https://careers.crowdstrike.com/us/en/search-results?q={query}"},
         {"name": "Palo Alto Networks", "url": "https://jobs.paloaltonetworks.com/jobs/search?q={query}"},
-        {"name": "SentinelOne",        "url": "https://www.sentinelone.com/jobs/?q={query}"},
         {"name": "Tenable",            "url": "https://careers.tenable.com/jobs?q={query}"},
         {"name": "Microsoft",          "url": "https://careers.microsoft.com/global/en/search-results?q={query}+security"},
         {"name": "IBM",                "url": "https://careers.ibm.com/job/search?q={query}+security&country=US"},
-        {"name": "Deloitte",           "url": "https://apply.deloitte.com/careers/SearchJobs/{query}"},
-        {"name": "FanDuel",            "url": "https://careers.fanduel.com/jobs?q={query}"},
-        {"name": "Morgan Stanley",     "url": "https://jobs.morganstanley.com/job-search-results/?q={query}"},
         {"name": "JPMorgan Chase",     "url": "https://careers.jpmorgan.com/us/en/jobs?search={query}"},
         {"name": "Bloomberg",          "url": "https://careers.bloomberg.com/job/search?q={query}"},
-        {"name": "Northwell",          "url": "https://jobs.northwell.edu/search/?q={query}"},
+        {"name": "Northwell",          "url": "https://jobs.northwell.edu/search-jobs/{query}/287/1"},
+        {"name": "Morgan Stanley",     "url": "https://morganstanleycareers.com/search/?q={query}"},
+        {"name": "Deloitte",           "url": "https://apply.deloitte.com/careers/SearchJobs/{query}"},
         {"name": "MSKCC",              "url": "https://careers.mskcc.org/search/?q={query}"},
     ],
 }
@@ -282,6 +278,21 @@ def _card_text(card, selectors: list) -> str:
 
 # ── Tier 1: Company career page scraper ───────────────────────────────────────
 
+_CAREER_ERROR_PHRASES = [
+    "this site can't be reached", "dns_probe_finished", "err_name_not_resolved",
+    "err_connection_refused", "page not found", "404 not found", "404 error",
+    "the page you requested was not found", "sorry, we couldn't find",
+    "no page found", "page doesn't exist",
+]
+
+_CAREER_AUTH_PHRASES = [
+    "sign in to apply", "log in to apply", "create account to apply",
+    "create an account to continue", "please sign in or register",
+    "register to apply", "sign up to apply", "login required",
+    "you must be logged in", "please log in to continue",
+]
+
+
 def _scrape_company_careers(page, company: dict, search_terms: dict,
                              existing: set, limit: int = 15) -> list:
     """Best-effort scraper for a company career page. Returns [] on any error."""
@@ -292,8 +303,20 @@ def _scrape_company_careers(page, company: dict, search_terms: dict,
     raw_url = company["url"].format(query=query)
 
     try:
-        page.goto(raw_url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(3)
+        page.goto(raw_url, wait_until="domcontentloaded", timeout=15000)
+        time.sleep(1.5)
+
+        # Fast-fail: DNS errors, 404s, auth walls
+        try:
+            body_low = page.inner_text("body").lower()[:1500]
+            if any(p in body_low for p in _CAREER_ERROR_PHRASES):
+                print(f"    {name}: page unavailable — skipping")
+                return []
+            if any(p in body_low for p in _CAREER_AUTH_PHRASES):
+                print(f"    {name}: requires login to view jobs — skipping")
+                return []
+        except Exception:
+            pass
 
         # Broad link selectors that work across different ATS platforms
         for sel in [
@@ -582,12 +605,14 @@ def append_to_jobs_csv(new_jobs: list[dict]) -> list[dict]:
             continue
         max_id += 1
         added.append({
-            "id":       max_id,
-            "url":      url,
-            "company":  job.get("company", ""),
-            "title":    job.get("title",   ""),
-            "priority": "MED",
-            "notes":    job.get("notes",   "auto-discovered"),
+            "id":         max_id,
+            "url":        url,
+            "company":    job.get("company", ""),
+            "title":      job.get("title",   ""),
+            "priority":   "MED",
+            "notes":      job.get("notes",   "auto-discovered"),
+            "source_tier": job.get("source_tier", 0),
+            "source":     job.get("source", "discovery"),
         })
         existing_urls.add(url)
 
